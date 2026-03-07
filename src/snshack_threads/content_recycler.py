@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from .csv_analyzer import _detect_hooks, _text_length_bucket
+from .csv_analyzer import _HOOK_PATTERNS, _detect_hooks, _text_length_bucket
 from .post_history import PostHistory, PostRecord
 
 
@@ -56,11 +56,8 @@ def suggest_recycle(record: PostRecord) -> dict:
     hooks_used = _detect_hooks(record.text)
     length = _text_length_bucket(record.text)
 
-    # All available hooks minus the ones already used
-    all_hooks = [
-        "数字訴求", "疑問形", "危機感", "限定感", "断言", "呼びかけ",
-        "共感", "対比", "裏技", "実体験", "ランキング", "議論喚起",
-    ]
+    # Derive all hook names from csv_analyzer (single source of truth)
+    all_hooks = [name for name, _ in _HOOK_PATTERNS]
     unused_hooks = [h for h in all_hooks if h not in hooks_used]
 
     return {

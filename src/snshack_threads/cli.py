@@ -109,7 +109,13 @@ def schedule(
     if add_cta:
         text = append_cta(text)
 
-    publish_at = datetime.strptime(at, "%Y-%m-%d %H:%M")
+    try:
+        publish_at = datetime.strptime(at, "%Y-%m-%d %H:%M")
+    except ValueError:
+        console.print(f"[red]Invalid datetime format:[/red] {at}")
+        console.print("Expected format: YYYY-MM-DD HH:MM (例: 2026-03-10 09:00)")
+        raise typer.Exit(1)
+
     draft = PostDraft(text=text, first_comment=first_comment)
 
     with _get_client() as client:
@@ -143,7 +149,13 @@ def schedule_day(
     from .models import PostDraft
     from .scheduler import ContentNGError, schedule_posts_for_day
 
-    target = datetime.strptime(date, "%Y-%m-%d")
+    try:
+        target = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        console.print(f"[red]Invalid date format:[/red] {date}")
+        console.print("Expected format: YYYY-MM-DD (例: 2026-03-10)")
+        raise typer.Exit(1)
+
     dow_name = _DOW_NAMES[target.weekday()]
 
     # Collect drafts from --text args or --file
@@ -151,7 +163,11 @@ def schedule_day(
     if file:
         from pathlib import Path
 
-        lines = Path(file).read_text().strip().splitlines()
+        p = Path(file)
+        if not p.exists():
+            console.print(f"[red]File not found:[/red] {file}")
+            raise typer.Exit(1)
+        lines = p.read_text().strip().splitlines()
         all_texts.extend(line.strip() for line in lines if line.strip())
 
     if not all_texts:
@@ -220,7 +236,11 @@ def schedule_thread(
     from .models import PostDraft, ThreadDraft
     from .post_history import PostHistory
 
-    raw = Path(file).read_text(encoding="utf-8")
+    p = Path(file)
+    if not p.exists():
+        console.print(f"[red]File not found:[/red] {file}")
+        raise typer.Exit(1)
+    raw = p.read_text(encoding="utf-8")
     sections = [s.strip() for s in raw.split("---") if s.strip()]
 
     if len(sections) < 2:
@@ -244,7 +264,12 @@ def schedule_thread(
     drafts = [PostDraft(text=t) for t in sections]
     thread = ThreadDraft(posts=drafts, first_comment=first_comment)
 
-    publish_at = datetime.strptime(at, "%Y-%m-%d %H:%M")
+    try:
+        publish_at = datetime.strptime(at, "%Y-%m-%d %H:%M")
+    except ValueError:
+        console.print(f"[red]Invalid datetime format:[/red] {at}")
+        console.print("Expected format: YYYY-MM-DD HH:MM (例: 2026-03-10 09:00)")
+        raise typer.Exit(1)
 
     with _get_client() as client:
         result = client.schedule_thread(thread, publish_at)
@@ -359,7 +384,13 @@ def slots(
     """Show available time slots for a day (day-of-week optimized)."""
     from .scheduler import get_next_available_slots
 
-    target = datetime.strptime(date, "%Y-%m-%d") if date else datetime.now()
+    try:
+        target = datetime.strptime(date, "%Y-%m-%d") if date else datetime.now()
+    except ValueError:
+        console.print(f"[red]Invalid date format:[/red] {date}")
+        console.print("Expected format: YYYY-MM-DD (例: 2026-03-10)")
+        raise typer.Exit(1)
+
     dow_name = _DOW_NAMES[target.weekday()]
 
     with _get_client() as client:
