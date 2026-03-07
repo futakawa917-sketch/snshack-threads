@@ -19,21 +19,31 @@ jobs:
           python-version: '3.13'
 
       - name: Install dependencies
-        run: pip install -e .
+        run: pip install -e ".[ai]"
 
       - name: Setup profile
+        env:
+          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          THREADS_APP_ID: ${{ secrets.THREADS_APP_ID }}
+          THREADS_APP_SECRET: ${{ secrets.THREADS_APP_SECRET }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           mkdir -p ~/.snshack-threads/profiles/default
-          cat > ~/.snshack-threads/profiles/default/config.json << 'CONF'
-          {
-            "threads_access_token": "${{ secrets.THREADS_ACCESS_TOKEN }}",
-            "threads_user_id": "${{ secrets.THREADS_USER_ID }}",
-            "threads_app_id": "${{ secrets.THREADS_APP_ID }}",
-            "threads_app_secret": "${{ secrets.THREADS_APP_SECRET }}",
-            "anthropic_api_key": "${{ secrets.ANTHROPIC_API_KEY }}",
-            "research_keywords": "補助金,助成金,資金調達"
+          python3 -c "
+          import json, os
+          config = {
+              'threads_access_token': os.environ['THREADS_ACCESS_TOKEN'],
+              'threads_user_id': os.environ['THREADS_USER_ID'],
+              'threads_app_id': os.environ['THREADS_APP_ID'],
+              'threads_app_secret': os.environ['THREADS_APP_SECRET'],
+              'anthropic_api_key': os.environ['ANTHROPIC_API_KEY'],
+              'research_keywords': '補助金,助成金,資金調達',
           }
-          CONF
+          with open(os.path.expanduser('~/.snshack-threads/profiles/default/config.json'), 'w') as f:
+              json.dump(config, f, ensure_ascii=False, indent=2)
+          print('Profile config created')
+          "
 
       - name: Run autopilot
         env:
