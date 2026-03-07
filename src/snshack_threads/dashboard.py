@@ -1137,7 +1137,38 @@ def _render_settings(st, profile, settings):
         f"**登録済みクライアント:** {', '.join(profiles) if profiles else 'なし'}"
     )
 
+    # Rename profile
+    if profiles:
+        _profile_rename_form(st, profiles)
+
     _profile_create_form(st)
+
+
+def _profile_rename_form(st, profiles):
+    """Render profile rename form."""
+    from .config import rename_profile
+
+    with st.form("rename_profile"):
+        st.markdown("**クライアント名の変更**")
+        col1, col2 = st.columns(2)
+        with col1:
+            old_name = st.selectbox("変更するクライアント", profiles, key="rename_old")
+        with col2:
+            new_name = st.text_input("新しい名前", key="rename_new", placeholder="例: SNS-HACK-補助金")
+        rename_btn = st.form_submit_button("名前を変更", use_container_width=True)
+
+    if rename_btn and new_name:
+        new_name = new_name.strip()
+        try:
+            rename_profile(old_name, new_name)
+            st.success(f"「{old_name}」→「{new_name}」に変更しました！")
+            st.rerun()
+        except FileExistsError:
+            st.error(f"「{new_name}」は既に存在します")
+        except FileNotFoundError:
+            st.error(f"「{old_name}」が見つかりません")
+        except Exception as e:
+            st.error(f"エラー: {e}")
 
 
 def _profile_create_form(st):

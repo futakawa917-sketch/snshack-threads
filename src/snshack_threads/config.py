@@ -130,6 +130,33 @@ def create_profile(
     return pdir
 
 
+def rename_profile(old_name: str, new_name: str) -> Path:
+    """Rename a profile directory."""
+    old_dir = _profile_dir(old_name)
+    if not old_dir.exists():
+        raise FileNotFoundError(f"Profile '{old_name}' not found")
+    new_dir = _profile_dir(new_name)
+    if new_dir.exists():
+        raise FileExistsError(f"Profile '{new_name}' already exists")
+
+    old_dir.rename(new_dir)
+
+    # Update profile_name in config.json
+    config_path = new_dir / "config.json"
+    if config_path.exists():
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["profile_name"] = new_name
+        config_path.write_text(
+            json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    # Update active profile if it was the renamed one
+    if _read_active_profile() == old_name:
+        _write_active_profile(new_name)
+
+    return new_dir
+
+
 def delete_profile(name: str) -> None:
     """Delete a profile directory."""
     import shutil
