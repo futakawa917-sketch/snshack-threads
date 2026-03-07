@@ -1,116 +1,112 @@
-"""Post scheduling and automation."""
+"""Post scheduling and automation via Metricool API.
+
+Supports batch scheduling of multiple posts per day (default: 5).
+"""
 
 from __future__ import annotations
 
-import json
-import uuid
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timedelta
 from typing import Any
 
-from pydantic import BaseModel, Field
-
-from .config import get_settings
-from .models import PostDraft
-
-
-class ScheduledPost(BaseModel):
-    """A post scheduled for future publishing."""
-
-    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
-    draft: PostDraft
-    scheduled_at: datetime
-    published: bool = False
-    published_post_id: str | None = None
-    created_at: datetime = Field(default_factory=datetime.now)
+from .api import MetricoolClient
+from .config import Settings, get_settings
+from .models import DailySchedule, PostDraft, ScheduleSlot
 
 
-class PostQueue:
-    """Persistent queue for scheduled posts.
+def schedule_posts_for_day(
+    client: MetricoolClient,
+    drafts: list[PostDraft],
+    date: datetime,
+    schedule: DailySchedule | None = None,
+) -> list[dict[str, Any]]:
+    """Schedule multiple posts for a single day at predefined time slots.
 
-    Stores scheduled posts as JSON in the data directory.
+    Args:
+        client: Metricool API client.
+        drafts: List of post drafts (up to len(schedule.slots)).
+        date: The target date.
+        schedule: Time slots for the day. Defaults to 5 slots (8, 11, 14, 18, 21).
+
+    Returns:
+        List of API responses for each scheduled post.
     """
+    if schedule is None:
+        schedule = DailySchedule()
 
-    def __init__(self, data_dir: Path | None = None) -> None:
-        self._data_dir = data_dir or get_settings().data_dir
-        self._queue_file = self._data_dir / "queue.json"
-        self._data_dir.mkdir(parents=True, exist_ok=True)
+    results: list[dict[str, Any]] = []
+    for i, draft in enumerate(drafts):
+        if i >= len(schedule.slots):
+            break
+        slot = schedule.slots[i]
+        publish_at = date.replace(
+            hour=slot.hour, minute=slot.minute, second=0, microsecond=0
+        )
+        result = client.schedule_post(draft, publish_at)
+        results.append(result)
 
-    def _load(self) -> list[dict[str, Any]]:
-        if not self._queue_file.exists():
-            return []
-        return json.loads(self._queue_file.read_text())
-
-    def _save(self, items: list[dict[str, Any]]) -> None:
-        self._queue_file.write_text(json.dumps(items, default=str, indent=2))
-
-    def add(self, draft: PostDraft, scheduled_at: datetime) -> ScheduledPost:
-        """Add a post to the queue."""
-        entry = ScheduledPost(draft=draft, scheduled_at=scheduled_at)
-        items = self._load()
-        items.append(entry.model_dump())
-        self._save(items)
-        return entry
-
-    def list_pending(self) -> list[ScheduledPost]:
-        """Return all unpublished posts ordered by scheduled time."""
-        items = self._load()
-        pending = [
-            ScheduledPost(**item)
-            for item in items
-            if not item.get("published", False)
-        ]
-        return sorted(pending, key=lambda p: p.scheduled_at)
-
-    def list_all(self) -> list[ScheduledPost]:
-        """Return all posts (published and pending)."""
-        return [ScheduledPost(**item) for item in self._load()]
-
-    def mark_published(self, entry_id: str, post_id: str) -> None:
-        """Mark a queued entry as published."""
-        items = self._load()
-        for item in items:
-            if item["id"] == entry_id:
-                item["published"] = True
-                item["published_post_id"] = post_id
-                break
-        self._save(items)
-
-    def remove(self, entry_id: str) -> bool:
-        """Remove a queued entry. Returns True if found and removed."""
-        items = self._load()
-        new_items = [i for i in items if i["id"] != entry_id]
-        if len(new_items) == len(items):
-            return False
-        self._save(new_items)
-        return True
-
-    def get_due(self) -> list[ScheduledPost]:
-        """Return pending posts whose scheduled time has passed."""
-        now = datetime.now()
-        return [p for p in self.list_pending() if p.scheduled_at <= now]
+    return results
 
 
-def publish_due_posts(queue: PostQueue | None = None) -> list[str]:
-    """Publish all due posts. Returns list of published post IDs.
+def schedule_posts_for_week(
+    client: MetricoolClient,
+    daily_drafts: dict[str, list[PostDraft]],
+    start_date: datetime,
+    schedule: DailySchedule | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Schedule posts for multiple days.
 
-    This is the main automation entry point — call it periodically
-    (e.g. via cron) to auto-publish scheduled posts.
+    Args:
+        client: Metricool API client.
+        daily_drafts: Mapping of date string (YYYY-MM-DD) to list of drafts.
+        start_date: Starting date for the scheduling period.
+        schedule: Time slots per day.
+
+    Returns:
+        Mapping of date string to list of API responses.
     """
-    from .api import ThreadsClient
+    results: dict[str, list[dict[str, Any]]] = {}
 
-    if queue is None:
-        queue = PostQueue()
+    for date_str, drafts in daily_drafts.items():
+        date = datetime.strptime(date_str, "%Y-%m-%d")
+        day_results = schedule_posts_for_day(client, drafts, date, schedule)
+        results[date_str] = day_results
 
-    due = queue.get_due()
-    if not due:
-        return []
+    return results
 
-    published_ids: list[str] = []
-    with ThreadsClient() as client:
-        for entry in due:
-            post = client.create_post(entry.draft)
-            queue.mark_published(entry.id, post.id)
-            published_ids.append(post.id)
 
-    return published_ids
+def get_next_available_slots(
+    client: MetricoolClient,
+    date: datetime,
+    schedule: DailySchedule | None = None,
+) -> list[datetime]:
+    """Find available time slots for a given day.
+
+    Checks already-scheduled posts and returns slots that are still free.
+    """
+    if schedule is None:
+        schedule = DailySchedule()
+
+    date_str = date.strftime("%Y-%m-%d")
+    existing = client.get_scheduled_posts(date_str, date_str)
+
+    # Get existing scheduled times
+    scheduled_hours: set[int] = set()
+    for post in existing:
+        pub_date = post.get("publicationDate", {})
+        dt_str = pub_date.get("dateTime", "")
+        if dt_str:
+            try:
+                dt = datetime.fromisoformat(dt_str)
+                scheduled_hours.add(dt.hour)
+            except ValueError:
+                pass
+
+    # Return slots that don't conflict
+    available: list[datetime] = []
+    for slot in schedule.slots:
+        if slot.hour not in scheduled_hours:
+            available.append(
+                date.replace(hour=slot.hour, minute=slot.minute, second=0, microsecond=0)
+            )
+
+    return available

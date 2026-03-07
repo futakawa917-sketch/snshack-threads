@@ -1,4 +1,4 @@
-"""Data models for Threads API responses."""
+"""Data models for Metricool / Threads."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ class MediaType(StrEnum):
     TEXT = "TEXT"
     IMAGE = "IMAGE"
     VIDEO = "VIDEO"
-    CAROUSEL = "CAROUSEL"
 
 
 class ReplyControl(StrEnum):
@@ -22,57 +21,71 @@ class ReplyControl(StrEnum):
 
 
 class ThreadsPost(BaseModel):
-    """A single Threads post."""
+    """A Threads post returned from Metricool analytics."""
 
-    id: str
+    id: str | None = None
     text: str | None = None
-    media_type: MediaType = MediaType.TEXT
-    media_url: str | None = None
-    permalink: str | None = None
-    timestamp: datetime | None = None
-    username: str | None = None
-    is_quote_post: bool = False
-
-
-class ThreadsMetrics(BaseModel):
-    """Engagement metrics for a post."""
-
-    post_id: str
+    date: datetime | None = None
     views: int = 0
     likes: int = 0
     replies: int = 0
     reposts: int = 0
     quotes: int = 0
-    followers_count: int | None = None
+    engagement: float = 0.0
+    interactions: int = 0
+    permalink: str | None = None
 
     @property
-    def engagement_rate(self) -> float:
-        """Calculate engagement rate (interactions / views)."""
-        if self.views == 0:
-            return 0.0
-        interactions = self.likes + self.replies + self.reposts + self.quotes
-        return interactions / self.views
-
-    @property
-    def total_interactions(self) -> int:
-        return self.likes + self.replies + self.reposts + self.quotes
+    def engagement_rate_pct(self) -> str:
+        return f"{self.engagement * 100:.2f}%"
 
 
-class UserProfile(BaseModel):
-    """Threads user profile."""
+class ThreadsAccountMetrics(BaseModel):
+    """Account-level metrics for Threads."""
 
-    id: str
-    username: str
-    threads_biography: str | None = None
-    threads_profile_picture_url: str | None = None
+    followers_count: int = 0
+    delta_followers: int = 0
 
 
 class PostDraft(BaseModel):
-    """Draft for creating a new Threads post."""
+    """Draft for creating/scheduling a new Threads post via Metricool."""
 
     text: str = Field(max_length=500)
     media_type: MediaType = MediaType.TEXT
-    image_url: str | None = None
-    video_url: str | None = None
+    media_ids: list[str] = Field(default_factory=list)
     reply_control: ReplyControl = ReplyControl.EVERYONE
-    reply_to_id: str | None = None
+
+
+class ScheduleSlot(BaseModel):
+    """A time slot for scheduled posting."""
+
+    hour: int = Field(ge=0, le=23)
+    minute: int = Field(ge=0, le=59, default=0)
+
+
+class DailySchedule(BaseModel):
+    """Daily posting schedule with 5 default slots."""
+
+    slots: list[ScheduleSlot] = Field(
+        default_factory=lambda: [
+            ScheduleSlot(hour=8, minute=0),
+            ScheduleSlot(hour=11, minute=0),
+            ScheduleSlot(hour=14, minute=0),
+            ScheduleSlot(hour=18, minute=0),
+            ScheduleSlot(hour=21, minute=0),
+        ]
+    )
+
+    @property
+    def count(self) -> int:
+        return len(self.slots)
+
+
+class Brand(BaseModel):
+    """A Metricool brand."""
+
+    id: int
+    label: str
+    user_id: int
+    timezone: str | None = None
+    networks: list[dict] | None = None

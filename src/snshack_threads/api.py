@@ -1,52 +1,52 @@
-"""Threads API client."""
+"""Metricool API client for Threads automation & analytics."""
 
 from __future__ import annotations
 
-import time
+import json
+from datetime import datetime
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
 from .config import Settings, get_settings
-from .models import (
-    MediaType,
-    PostDraft,
-    ThreadsMetrics,
-    ThreadsPost,
-    UserProfile,
-)
+from .models import Brand, PostDraft, ThreadsAccountMetrics, ThreadsPost
 
 
-class ThreadsAPIError(Exception):
-    """Raised when the Threads API returns an error."""
+class MetricoolAPIError(Exception):
+    """Raised when the Metricool API returns an error."""
 
     def __init__(self, message: str, status_code: int | None = None):
         self.status_code = status_code
         super().__init__(message)
 
 
-class ThreadsClient:
-    """Client for the Threads API (v1.0).
+class MetricoolClient:
+    """Client for the Metricool REST API.
 
-    Reference: https://developers.facebook.com/docs/threads/
+    Endpoints discovered from the official mcp-metricool project.
     """
 
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or get_settings()
         if not self._settings.validate_credentials():
-            raise ThreadsAPIError(
-                "Missing credentials. Set THREADS_ACCESS_TOKEN and THREADS_USER_ID."
+            raise MetricoolAPIError(
+                "Missing credentials. Set METRICOOL_USER_TOKEN, METRICOOL_USER_ID, and METRICOOL_BLOG_ID."
             )
         self._http = httpx.Client(
             base_url=self._settings.api_base,
-            params={"access_token": self._settings.access_token},
+            headers={
+                "X-Mc-Auth": self._settings.user_token,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
             timeout=30.0,
         )
 
     def close(self) -> None:
         self._http.close()
 
-    def __enter__(self) -> ThreadsClient:
+    def __enter__(self) -> MetricoolClient:
         return self
 
     def __exit__(self, *_: Any) -> None:
@@ -54,109 +54,174 @@ class ThreadsClient:
 
     # ── helpers ──────────────────────────────────────────────
 
-    def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        resp = self._http.request(method, path, **kwargs)
+    def _common_params(self) -> dict[str, str]:
+        return {
+            "blogId": self._settings.blog_id,
+            "userId": self._settings.user_id,
+        }
+
+    def _get(self, path: str, params: dict[str, str] | None = None) -> dict[str, Any]:
+        all_params = self._common_params()
+        if params:
+            all_params.update(params)
+        resp = self._http.get(path, params=all_params)
         if resp.status_code >= 400:
-            raise ThreadsAPIError(resp.text, status_code=resp.status_code)
+            raise MetricoolAPIError(resp.text, status_code=resp.status_code)
         return resp.json()
 
-    def _get(self, path: str, **kwargs: Any) -> dict[str, Any]:
-        return self._request("GET", path, **kwargs)
+    def _post(self, path: str, data: dict[str, Any] | None = None, params: dict[str, str] | None = None) -> dict[str, Any]:
+        all_params = self._common_params()
+        if params:
+            all_params.update(params)
+        resp = self._http.post(path, params=all_params, content=json.dumps(data) if data else None)
+        if resp.status_code >= 400:
+            raise MetricoolAPIError(resp.text, status_code=resp.status_code)
+        return resp.json()
 
-    def _post(self, path: str, **kwargs: Any) -> dict[str, Any]:
-        return self._request("POST", path, **kwargs)
+    # ── brands ───────────────────────────────────────────────
 
-    # ── profile ─────────────────────────────────────────────
+    def get_brands(self) -> list[Brand]:
+        """Fetch all brands for this account."""
+        data = self._get("/v2/settings/brands")
+        return [
+            Brand(
+                id=item["id"],
+                label=item.get("label", ""),
+                user_id=item.get("userId", 0),
+                timezone=item.get("timezone"),
+                networks=item.get("networksData"),
+            )
+            for item in data.get("data", [])
+        ]
 
-    def get_profile(self) -> UserProfile:
-        """Fetch the authenticated user's profile."""
-        data = self._get(
-            f"/{self._settings.user_id}",
-            params={"fields": "id,username,threads_biography,threads_profile_picture_url"},
-        )
-        return UserProfile(**data)
+    # ── Threads posts (analytics) ────────────────────────────
 
-    # ── posts ───────────────────────────────────────────────
+    def get_threads_posts(
+        self, start: str, end: str
+    ) -> list[ThreadsPost]:
+        """Fetch Threads posts with analytics for a date range.
 
-    def get_posts(self, limit: int = 25) -> list[ThreadsPost]:
-        """Fetch recent posts for the authenticated user."""
-        data = self._get(
-            f"/{self._settings.user_id}/threads",
-            params={
-                "fields": "id,text,media_type,media_url,permalink,timestamp,username,is_quote_post",
-                "limit": str(limit),
-            },
-        )
-        return [ThreadsPost(**post) for post in data.get("data", [])]
-
-    def get_post(self, post_id: str) -> ThreadsPost:
-        """Fetch a single post by ID."""
-        data = self._get(
-            f"/{post_id}",
-            params={
-                "fields": "id,text,media_type,media_url,permalink,timestamp,username,is_quote_post"
-            },
-        )
-        return ThreadsPost(**data)
-
-    def create_post(self, draft: PostDraft) -> ThreadsPost:
-        """Publish a new Threads post (two-step: create container, then publish).
-
-        Reference: https://developers.facebook.com/docs/threads/posts
+        Args:
+            start: Start date in YYYY-MM-DD format.
+            end: End date in YYYY-MM-DD format.
         """
-        # Step 1: create media container
-        container_params: dict[str, str] = {
-            "media_type": draft.media_type.value,
+        data = self._get(
+            "/v2/analytics/posts/threads",
+            params={
+                "from": f"{start}T00:00:00",
+                "to": f"{end}T23:59:59",
+            },
+        )
+        posts = []
+        for item in data.get("data", data.get("posts", [])):
+            posts.append(ThreadsPost(
+                id=str(item.get("id", "")),
+                text=item.get("text"),
+                date=item.get("date"),
+                views=item.get("views", 0),
+                likes=item.get("likes", 0),
+                replies=item.get("replies", 0),
+                reposts=item.get("reposts", 0),
+                quotes=item.get("quotes", 0),
+                engagement=item.get("engagement", 0.0),
+                interactions=item.get("interactions", 0),
+                permalink=item.get("permalink"),
+            ))
+        return posts
+
+    def get_threads_account_metrics(
+        self, start: str, end: str
+    ) -> ThreadsAccountMetrics:
+        """Fetch Threads account-level metrics."""
+        tz = quote(self._settings.timezone, safe="")
+        data = self._get(
+            "/v2/analytics/timelines",
+            params={
+                "from": f"{start}T00:00:00",
+                "to": f"{end}T23:59:59",
+                "network": "threads",
+                "subject": "account",
+                "timezone": tz,
+            },
+        )
+        metrics_data = data.get("data", {})
+        return ThreadsAccountMetrics(
+            followers_count=metrics_data.get("followers_count", 0),
+            delta_followers=metrics_data.get("delta_followers", 0),
+        )
+
+    # ── scheduling ───────────────────────────────────────────
+
+    def schedule_post(
+        self,
+        draft: PostDraft,
+        publish_at: datetime,
+    ) -> dict[str, Any]:
+        """Schedule a Threads post via Metricool.
+
+        Args:
+            draft: The post content.
+            publish_at: When to publish (datetime).
+        """
+        tz = self._settings.timezone
+        dt_str = publish_at.strftime("%Y-%m-%dT%H:%M:%S")
+
+        post_data = {
+            "autoPublish": True,
+            "descendants": [],
+            "draft": False,
+            "firstCommentText": "",
+            "hasNotReadNotes": False,
+            "media": [],
+            "mediaAltText": [],
+            "providers": [{"network": "threads"}],
+            "publicationDate": {
+                "dateTime": dt_str,
+                "timezone": tz,
+            },
+            "shortener": False,
+            "smartLinkData": {"ids": []},
             "text": draft.text,
+            "threadsData": {},
         }
-        if draft.image_url and draft.media_type == MediaType.IMAGE:
-            container_params["image_url"] = draft.image_url
-        if draft.video_url and draft.media_type == MediaType.VIDEO:
-            container_params["video_url"] = draft.video_url
-        if draft.reply_to_id:
-            container_params["reply_to_id"] = draft.reply_to_id
-        if draft.reply_control.value != "everyone":
-            container_params["reply_control"] = draft.reply_control.value
 
-        container = self._post(
-            f"/{self._settings.user_id}/threads",
-            params=container_params,
+        return self._post(
+            "/v2/scheduler/posts",
+            data=post_data,
         )
-        container_id = container["id"]
 
-        # Step 2: publish the container
-        # Short delay to allow processing
-        time.sleep(2)
-        result = self._post(
-            f"/{self._settings.user_id}/threads_publish",
-            params={"creation_id": container_id},
-        )
-        return self.get_post(result["id"])
-
-    # ── insights / metrics ──────────────────────────────────
-
-    def get_post_metrics(self, post_id: str) -> ThreadsMetrics:
-        """Fetch engagement metrics for a single post."""
+    def get_scheduled_posts(
+        self, start: str, end: str
+    ) -> list[dict[str, Any]]:
+        """Fetch scheduled (pending) posts."""
+        tz = quote(self._settings.timezone, safe="")
         data = self._get(
-            f"/{post_id}/insights",
-            params={"metric": "views,likes,replies,reposts,quotes"},
+            "/v2/scheduler/posts",
+            params={
+                "start": f"{start}T00:00:00",
+                "end": f"{end}T23:59:59",
+                "timezone": tz,
+                "extendedRange": "false",
+            },
         )
-        values: dict[str, int] = {}
-        for entry in data.get("data", []):
-            name = entry["name"]
-            val = entry.get("values", [{}])[0].get("value", 0)
-            values[name] = val
-        return ThreadsMetrics(post_id=post_id, **values)
+        return data.get("data", [])
 
-    def get_user_metrics(self) -> dict[str, int]:
-        """Fetch user-level metrics (follower count, etc.)."""
+    def get_best_time_to_post(self, start: str, end: str) -> list[dict[str, Any]]:
+        """Get best times to post on Threads.
+
+        Returns list of {dayOfWeek, hour, value} entries.
+        Higher value = better time.
+        """
+        tz = quote(self._settings.timezone, safe="")
+        # Note: best times endpoint doesn't support "threads" directly,
+        # using "instagram" as proxy since Threads engagement patterns
+        # are similar. Adjust if Metricool adds Threads support.
         data = self._get(
-            f"/{self._settings.user_id}/threads_insights",
-            params={"metric": "views,likes,replies,reposts,quotes,followers_count"},
+            "/v2/scheduler/besttimes/instagram",
+            params={
+                "start": f"{start}T00:00:00",
+                "end": f"{end}T23:59:59",
+                "timezone": tz,
+            },
         )
-        result: dict[str, int] = {}
-        for entry in data.get("data", []):
-            name = entry["name"]
-            val = entry.get("total_value", {}).get("value", 0)
-            result[name] = val
-        return result
+        return data.get("data", [])

@@ -1,116 +1,142 @@
-"""Tests for the Threads API client (using respx to mock HTTP)."""
+"""Tests for the Metricool API client (using respx to mock HTTP)."""
+
+import json
 
 import pytest
 import respx
 from httpx import Response
 
-from snshack_threads.api import ThreadsAPIError, ThreadsClient
+from snshack_threads.api import MetricoolAPIError, MetricoolClient
 from snshack_threads.config import Settings
 from snshack_threads.models import PostDraft
+
+API_BASE = "https://app.metricool.com/api"
 
 
 @pytest.fixture
 def settings():
     return Settings(
-        access_token="test_token",
+        user_token="test_token",
         user_id="12345",
-        api_base="https://graph.threads.net/v1.0",
+        blog_id="67890",
+        timezone="Asia/Tokyo",
+        api_base=API_BASE,
     )
 
 
 @pytest.fixture
 def client(settings):
-    c = ThreadsClient(settings=settings)
+    c = MetricoolClient(settings=settings)
     yield c
     c.close()
 
 
-class TestThreadsClient:
+class TestMetricoolClient:
     def test_missing_credentials_raises(self):
-        with pytest.raises(ThreadsAPIError, match="Missing credentials"):
-            ThreadsClient(settings=Settings(access_token="", user_id=""))
+        with pytest.raises(MetricoolAPIError, match="Missing credentials"):
+            MetricoolClient(settings=Settings(user_token="", user_id="", blog_id=""))
 
     @respx.mock
-    def test_get_profile(self, client, settings):
-        respx.get(f"{settings.api_base}/{settings.user_id}").mock(
-            return_value=Response(
-                200,
-                json={
-                    "id": "12345",
-                    "username": "testuser",
-                    "threads_biography": "Hello!",
-                },
-            )
-        )
-        profile = client.get_profile()
-        assert profile.username == "testuser"
-        assert profile.threads_biography == "Hello!"
-
-    @respx.mock
-    def test_get_posts(self, client, settings):
-        respx.get(f"{settings.api_base}/{settings.user_id}/threads").mock(
+    def test_get_brands(self, client):
+        respx.get(f"{API_BASE}/v2/settings/brands").mock(
             return_value=Response(
                 200,
                 json={
                     "data": [
-                        {"id": "p1", "text": "Hello", "media_type": "TEXT"},
-                        {"id": "p2", "text": "World", "media_type": "TEXT"},
+                        {
+                            "id": 111,
+                            "label": "My Brand",
+                            "userId": 12345,
+                            "timezone": "Asia/Tokyo",
+                            "networksData": [{"network": "threads"}],
+                        }
                     ]
                 },
             )
         )
-        posts = client.get_posts(limit=2)
+        brands = client.get_brands()
+        assert len(brands) == 1
+        assert brands[0].label == "My Brand"
+        assert brands[0].timezone == "Asia/Tokyo"
+
+    @respx.mock
+    def test_get_threads_posts(self, client):
+        respx.get(f"{API_BASE}/v2/analytics/posts/threads").mock(
+            return_value=Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "p1",
+                            "text": "Hello Threads",
+                            "views": 500,
+                            "likes": 30,
+                            "replies": 5,
+                            "reposts": 2,
+                            "quotes": 1,
+                            "engagement": 0.076,
+                            "interactions": 38,
+                        },
+                        {
+                            "id": "p2",
+                            "text": "Second post",
+                            "views": 200,
+                            "likes": 10,
+                            "replies": 2,
+                            "reposts": 0,
+                            "quotes": 0,
+                            "engagement": 0.06,
+                            "interactions": 12,
+                        },
+                    ]
+                },
+            )
+        )
+        posts = client.get_threads_posts("2026-03-01", "2026-03-07")
         assert len(posts) == 2
-        assert posts[0].text == "Hello"
+        assert posts[0].text == "Hello Threads"
+        assert posts[0].views == 500
+        assert posts[0].likes == 30
 
     @respx.mock
-    def test_get_post_metrics(self, client, settings):
-        respx.get(f"{settings.api_base}/p1/insights").mock(
+    def test_schedule_post(self, client):
+        respx.post(f"{API_BASE}/v2/scheduler/posts").mock(
+            return_value=Response(200, json={"data": {"id": "sched_1"}})
+        )
+        from datetime import datetime
+
+        draft = PostDraft(text="Scheduled post")
+        result = client.schedule_post(draft, datetime(2026, 3, 8, 14, 0))
+        assert "data" in result
+
+    @respx.mock
+    def test_get_scheduled_posts(self, client):
+        respx.get(f"{API_BASE}/v2/scheduler/posts").mock(
             return_value=Response(
                 200,
                 json={
                     "data": [
-                        {"name": "views", "values": [{"value": 500}]},
-                        {"name": "likes", "values": [{"value": 30}]},
-                        {"name": "replies", "values": [{"value": 5}]},
-                        {"name": "reposts", "values": [{"value": 2}]},
-                        {"name": "quotes", "values": [{"value": 1}]},
+                        {
+                            "text": "Pending post",
+                            "publicationDate": {
+                                "dateTime": "2026-03-08T14:00:00",
+                                "timezone": "Asia/Tokyo",
+                            },
+                            "providers": [{"network": "threads"}],
+                        }
                     ]
                 },
             )
         )
-        metrics = client.get_post_metrics("p1")
-        assert metrics.views == 500
-        assert metrics.likes == 30
-        assert metrics.engagement_rate == (30 + 5 + 2 + 1) / 500
+        posts = client.get_scheduled_posts("2026-03-08", "2026-03-14")
+        assert len(posts) == 1
+        assert posts[0]["text"] == "Pending post"
 
     @respx.mock
-    def test_api_error_handling(self, client, settings):
-        respx.get(f"{settings.api_base}/{settings.user_id}").mock(
+    def test_api_error_handling(self, client):
+        respx.get(f"{API_BASE}/v2/settings/brands").mock(
             return_value=Response(401, json={"error": "Invalid token"})
         )
-        with pytest.raises(ThreadsAPIError) as exc:
-            client.get_profile()
+        with pytest.raises(MetricoolAPIError) as exc:
+            client.get_brands()
         assert exc.value.status_code == 401
-
-    @respx.mock
-    def test_create_post(self, client, settings):
-        # Mock container creation
-        respx.post(f"{settings.api_base}/{settings.user_id}/threads").mock(
-            return_value=Response(200, json={"id": "container_1"})
-        )
-        # Mock publish
-        respx.post(f"{settings.api_base}/{settings.user_id}/threads_publish").mock(
-            return_value=Response(200, json={"id": "post_1"})
-        )
-        # Mock get_post for result
-        respx.get(f"{settings.api_base}/post_1").mock(
-            return_value=Response(
-                200,
-                json={"id": "post_1", "text": "New post", "media_type": "TEXT"},
-            )
-        )
-        draft = PostDraft(text="New post")
-        result = client.create_post(draft)
-        assert result.id == "post_1"
-        assert result.text == "New post"

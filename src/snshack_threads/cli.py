@@ -1,8 +1,8 @@
-"""CLI entry point."""
+"""CLI entry point for snshack-threads (Metricool-based)."""
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import typer
 from rich.console import Console
@@ -12,16 +12,16 @@ from . import __version__
 
 app = typer.Typer(
     name="snshack",
-    help="Threads (Meta) automation & analytics CLI",
+    help="Threads automation & analytics via Metricool",
     no_args_is_help=True,
 )
 console = Console()
 
 
 def _get_client():
-    from .api import ThreadsClient
+    from .api import MetricoolClient
 
-    return ThreadsClient()
+    return MetricoolClient()
 
 
 # ── info ─────────────────────────────────────────────────────
@@ -33,182 +33,236 @@ def version():
 
 
 @app.command()
-def profile():
-    """Show your Threads profile."""
+def brands():
+    """List brands in your Metricool account."""
     with _get_client() as client:
-        p = client.get_profile()
-        console.print(f"[bold]{p.username}[/bold]  (ID: {p.id})")
-        if p.threads_biography:
-            console.print(f"  Bio: {p.threads_biography}")
+        items = client.get_brands()
+
+    for b in items:
+        networks = ", ".join(n.get("network", "") for n in (b.networks or []))
+        console.print(f"  [bold]{b.label}[/bold]  (blogId: {b.id})  [{networks}]")
 
 
-# ── posts ────────────────────────────────────────────────────
+# ── posts (analytics) ───────────────────────────────────────
 
 @app.command()
-def posts(limit: int = typer.Option(10, help="Number of posts to fetch")):
-    """List your recent Threads posts."""
-    with _get_client() as client:
-        items = client.get_posts(limit=limit)
+def posts(
+    days: int = typer.Option(30, help="Number of days to look back"),
+):
+    """List recent Threads posts with metrics."""
+    end = datetime.now()
+    start = end - timedelta(days=days)
 
-    table = Table(title="Recent Posts")
-    table.add_column("ID", style="dim")
-    table.add_column("Text", max_width=60)
-    table.add_column("Type")
-    table.add_column("Time")
+    with _get_client() as client:
+        items = client.get_threads_posts(
+            start.strftime("%Y-%m-%d"),
+            end.strftime("%Y-%m-%d"),
+        )
+
+    if not items:
+        console.print("No posts found.")
+        return
+
+    table = Table(title=f"Threads Posts (last {days} days)")
+    table.add_column("Date", style="dim")
+    table.add_column("Text", max_width=50)
+    table.add_column("Views", justify="right")
+    table.add_column("Likes", justify="right")
+    table.add_column("Replies", justify="right")
+    table.add_column("Eng.", justify="right")
 
     for p in items:
-        ts = p.timestamp.strftime("%Y-%m-%d %H:%M") if p.timestamp else "-"
-        text = (p.text or "")[:60]
-        table.add_row(p.id, text, p.media_type.value, ts)
+        date_str = p.date.strftime("%m/%d %H:%M") if p.date else "-"
+        text = (p.text or "")[:50]
+        table.add_row(
+            date_str, text,
+            f"{p.views:,}", f"{p.likes:,}", f"{p.replies:,}",
+            p.engagement_rate_pct,
+        )
 
     console.print(table)
-
-
-@app.command()
-def post(
-    text: str = typer.Argument(help="Post text (max 500 chars)"),
-    image_url: str | None = typer.Option(None, help="Image URL to attach"),
-):
-    """Publish a new Threads post."""
-    from .models import MediaType, PostDraft
-
-    media_type = MediaType.IMAGE if image_url else MediaType.TEXT
-    draft = PostDraft(text=text, media_type=media_type, image_url=image_url)
-
-    with _get_client() as client:
-        result = client.create_post(draft)
-
-    console.print(f"[green]Published![/green]  Post ID: {result.id}")
-    if result.permalink:
-        console.print(f"  Link: {result.permalink}")
 
 
 # ── scheduling ───────────────────────────────────────────────
 
 @app.command()
 def schedule(
-    text: str = typer.Argument(help="Post text"),
-    at: str = typer.Option(help="Scheduled time (YYYY-MM-DD HH:MM)"),
+    text: str = typer.Argument(help="Post text (max 500 chars)"),
+    at: str = typer.Option(help="Publish time (YYYY-MM-DD HH:MM)"),
 ):
-    """Schedule a post for later."""
+    """Schedule a single Threads post via Metricool."""
     from .models import PostDraft
-    from .scheduler import PostQueue
 
-    scheduled_at = datetime.strptime(at, "%Y-%m-%d %H:%M")
+    publish_at = datetime.strptime(at, "%Y-%m-%d %H:%M")
     draft = PostDraft(text=text)
-    queue = PostQueue()
-    entry = queue.add(draft, scheduled_at)
-    console.print(f"[green]Scheduled![/green]  ID: {entry.id}  at {scheduled_at}")
+
+    with _get_client() as client:
+        result = client.schedule_post(draft, publish_at)
+
+    console.print(f"[green]Scheduled![/green]  at {publish_at}")
+    console.print(f"  Response: {result}")
 
 
 @app.command()
-def queue():
-    """Show scheduled (pending) posts."""
-    from .scheduler import PostQueue
+def schedule_day(
+    date: str = typer.Argument(help="Target date (YYYY-MM-DD)"),
+    texts: list[str] = typer.Option([], "--text", "-t", help="Post texts (up to 5)"),
+    file: str | None = typer.Option(None, "--file", "-f", help="File with one post text per line"),
+):
+    """Schedule up to 5 posts for a day at optimal time slots (8, 11, 14, 18, 21).
 
-    q = PostQueue()
-    pending = q.list_pending()
+    Examples:
+      snshack schedule-day 2026-03-08 -t "朝の投稿" -t "昼の投稿" -t "午後" -t "夕方" -t "夜"
+      snshack schedule-day 2026-03-08 -f posts.txt
+    """
+    from .models import PostDraft
+    from .scheduler import schedule_posts_for_day
 
-    if not pending:
-        console.print("No pending posts.")
+    target = datetime.strptime(date, "%Y-%m-%d")
+
+    # Collect drafts from --text args or --file
+    all_texts: list[str] = list(texts)
+    if file:
+        from pathlib import Path
+
+        lines = Path(file).read_text().strip().splitlines()
+        all_texts.extend(line.strip() for line in lines if line.strip())
+
+    if not all_texts:
+        console.print("[red]No texts provided.[/red] Use --text or --file.")
+        raise typer.Exit(1)
+
+    if len(all_texts) > 5:
+        console.print(f"[yellow]Warning:[/yellow] {len(all_texts)} texts provided, only first 5 will be scheduled.")
+        all_texts = all_texts[:5]
+
+    drafts = [PostDraft(text=t) for t in all_texts]
+
+    with _get_client() as client:
+        results = schedule_posts_for_day(client, drafts, target)
+
+    console.print(f"[green]Scheduled {len(results)} posts for {date}![/green]")
+    from .models import DailySchedule
+
+    slots = DailySchedule().slots
+    for i, _result in enumerate(results):
+        slot = slots[i]
+        console.print(f"  {slot.hour:02d}:{slot.minute:02d} - {all_texts[i][:60]}")
+
+
+@app.command()
+def queue(
+    days: int = typer.Option(7, help="Number of days ahead to check"),
+):
+    """Show scheduled (pending) posts in Metricool."""
+    start = datetime.now()
+    end = start + timedelta(days=days)
+
+    with _get_client() as client:
+        items = client.get_scheduled_posts(
+            start.strftime("%Y-%m-%d"),
+            end.strftime("%Y-%m-%d"),
+        )
+
+    if not items:
+        console.print("No scheduled posts.")
         return
 
     table = Table(title="Scheduled Posts")
-    table.add_column("ID", style="dim")
+    table.add_column("Date", style="dim")
     table.add_column("Text", max_width=50)
-    table.add_column("Scheduled At")
+    table.add_column("Networks")
 
-    for entry in pending:
-        table.add_row(
-            entry.id,
-            entry.draft.text[:50],
-            entry.scheduled_at.strftime("%Y-%m-%d %H:%M"),
+    for item in items:
+        pub_date = item.get("publicationDate", {})
+        dt_str = pub_date.get("dateTime", "-")
+        text = (item.get("text", "") or "")[:50]
+        providers = ", ".join(
+            p.get("network", "") for p in item.get("providers", [])
         )
+        table.add_row(dt_str, text, providers)
 
     console.print(table)
 
 
 @app.command()
-def publish_due():
-    """Publish all posts whose scheduled time has passed."""
-    from .scheduler import publish_due_posts
+def slots(
+    date: str = typer.Argument(
+        default=None, help="Target date (YYYY-MM-DD), defaults to today"
+    ),
+):
+    """Show available time slots for a day."""
+    from .scheduler import get_next_available_slots
 
-    ids = publish_due_posts()
-    if ids:
-        console.print(f"[green]Published {len(ids)} post(s):[/green]")
-        for pid in ids:
-            console.print(f"  - {pid}")
-    else:
-        console.print("No due posts to publish.")
+    target = datetime.strptime(date, "%Y-%m-%d") if date else datetime.now()
+
+    with _get_client() as client:
+        available = get_next_available_slots(client, target)
+
+    if not available:
+        console.print(f"No available slots for {target.strftime('%Y-%m-%d')}.")
+        return
+
+    console.print(f"[bold]Available slots for {target.strftime('%Y-%m-%d')}:[/bold]")
+    for dt in available:
+        console.print(f"  {dt.strftime('%H:%M')}")
 
 
 # ── analytics ────────────────────────────────────────────────
 
 @app.command()
 def analytics(
-    limit: int = typer.Option(25, help="Number of posts to analyse"),
+    days: int = typer.Option(30, help="Number of days to analyse"),
     top: int = typer.Option(5, help="Number of top posts to show"),
 ):
-    """Show analytics report for recent posts."""
+    """Show analytics report for Threads posts."""
     from .analytics import generate_report
 
+    end = datetime.now()
+    start = end - timedelta(days=days)
+    start_str = start.strftime("%Y-%m-%d")
+    end_str = end.strftime("%Y-%m-%d")
+
     with _get_client() as client:
-        report = generate_report(client, limit=limit, top_n=top)
+        report = generate_report(client, start_str, end_str, top_n=top)
 
     if report.total_posts == 0:
         console.print("No posts found.")
         return
 
-    console.print("[bold]Analytics Report[/bold]")
-    if report.period_start and report.period_end:
-        console.print(
-            f"  Period: {report.period_start:%Y-%m-%d} ~ {report.period_end:%Y-%m-%d}"
-        )
-    console.print(f"  Posts analysed: {report.total_posts}")
+    console.print("[bold]Threads Analytics Report[/bold]")
+    console.print(f"  Period:         {report.period_start} ~ {report.period_end}")
+    console.print(f"  Posts:          {report.total_posts}")
     console.print(f"  Total views:    {report.total_views:,}")
     console.print(f"  Total likes:    {report.total_likes:,}")
     console.print(f"  Total replies:  {report.total_replies:,}")
     console.print(f"  Total reposts:  {report.total_reposts:,}")
     console.print(f"  Total quotes:   {report.total_quotes:,}")
     console.print(f"  Avg engagement: {report.avg_engagement_rate_pct}")
+    if report.followers_count:
+        delta = f"+{report.delta_followers}" if report.delta_followers >= 0 else str(report.delta_followers)
+        console.print(f"  Followers:      {report.followers_count:,} ({delta})")
     console.print()
 
     if report.top_posts:
         table = Table(title=f"Top {len(report.top_posts)} Posts by Interactions")
-        table.add_column("ID", style="dim")
+        table.add_column("Date", style="dim")
         table.add_column("Text", max_width=40)
         table.add_column("Views", justify="right")
         table.add_column("Likes", justify="right")
         table.add_column("Replies", justify="right")
-        table.add_column("Eng. Rate", justify="right")
+        table.add_column("Eng.", justify="right")
 
-        for s in report.top_posts:
-            text = (s.post.text or "")[:40]
+        for p in report.top_posts:
+            date_str = p.date.strftime("%m/%d") if p.date else "-"
+            text = (p.text or "")[:40]
             table.add_row(
-                s.post.id,
-                text,
-                f"{s.metrics.views:,}",
-                f"{s.metrics.likes:,}",
-                f"{s.metrics.replies:,}",
-                s.engagement_rate_pct,
+                date_str, text,
+                f"{p.views:,}", f"{p.likes:,}", f"{p.replies:,}",
+                p.engagement_rate_pct,
             )
 
         console.print(table)
-
-
-@app.command()
-def metrics(post_id: str = typer.Argument(help="Post ID to check")):
-    """Show metrics for a specific post."""
-    with _get_client() as client:
-        m = client.get_post_metrics(post_id)
-
-    console.print(f"[bold]Metrics for {post_id}[/bold]")
-    console.print(f"  Views:    {m.views:,}")
-    console.print(f"  Likes:    {m.likes:,}")
-    console.print(f"  Replies:  {m.replies:,}")
-    console.print(f"  Reposts:  {m.reposts:,}")
-    console.print(f"  Quotes:   {m.quotes:,}")
-    console.print(f"  Eng rate: {m.engagement_rate * 100:.2f}%")
 
 
 if __name__ == "__main__":

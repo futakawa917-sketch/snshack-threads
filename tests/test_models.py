@@ -1,42 +1,13 @@
 """Tests for data models."""
 
 from snshack_threads.models import (
+    DailySchedule,
     MediaType,
     PostDraft,
     ReplyControl,
-    ThreadsMetrics,
+    ScheduleSlot,
     ThreadsPost,
 )
-
-
-class TestThreadsMetrics:
-    def test_engagement_rate_with_views(self):
-        m = ThreadsMetrics(post_id="1", views=1000, likes=50, replies=10, reposts=5, quotes=2)
-        assert m.engagement_rate == (50 + 10 + 5 + 2) / 1000
-
-    def test_engagement_rate_zero_views(self):
-        m = ThreadsMetrics(post_id="1", views=0)
-        assert m.engagement_rate == 0.0
-
-    def test_total_interactions(self):
-        m = ThreadsMetrics(post_id="1", likes=10, replies=5, reposts=3, quotes=2)
-        assert m.total_interactions == 20
-
-
-class TestPostDraft:
-    def test_text_only(self):
-        d = PostDraft(text="Hello Threads!")
-        assert d.media_type == MediaType.TEXT
-        assert d.reply_control == ReplyControl.EVERYONE
-
-    def test_image_post(self):
-        d = PostDraft(
-            text="Check this out",
-            media_type=MediaType.IMAGE,
-            image_url="https://example.com/img.jpg",
-        )
-        assert d.media_type == MediaType.IMAGE
-        assert d.image_url == "https://example.com/img.jpg"
 
 
 class TestThreadsPost:
@@ -44,4 +15,41 @@ class TestThreadsPost:
         p = ThreadsPost(id="123")
         assert p.id == "123"
         assert p.text is None
-        assert p.is_quote_post is False
+        assert p.views == 0
+
+    def test_engagement_rate_pct(self):
+        p = ThreadsPost(id="1", engagement=0.042)
+        assert p.engagement_rate_pct == "4.20%"
+
+    def test_zero_engagement(self):
+        p = ThreadsPost(id="1", engagement=0.0)
+        assert p.engagement_rate_pct == "0.00%"
+
+
+class TestPostDraft:
+    def test_text_only(self):
+        d = PostDraft(text="Hello Threads!")
+        assert d.media_type == MediaType.TEXT
+        assert d.reply_control == ReplyControl.EVERYONE
+        assert d.media_ids == []
+
+    def test_image_post(self):
+        d = PostDraft(text="With image", media_type=MediaType.IMAGE)
+        assert d.media_type == MediaType.IMAGE
+
+
+class TestDailySchedule:
+    def test_default_5_slots(self):
+        schedule = DailySchedule()
+        assert schedule.count == 5
+        hours = [s.hour for s in schedule.slots]
+        assert hours == [8, 11, 14, 18, 21]
+
+    def test_custom_slots(self):
+        schedule = DailySchedule(
+            slots=[
+                ScheduleSlot(hour=9, minute=30),
+                ScheduleSlot(hour=15, minute=0),
+            ]
+        )
+        assert schedule.count == 2

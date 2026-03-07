@@ -1,74 +1,97 @@
-"""Tests for the post scheduler."""
+"""Tests for the scheduler (Metricool-based)."""
 
-from datetime import datetime, timedelta
-from pathlib import Path
+from datetime import datetime
+from unittest.mock import MagicMock
 
-from snshack_threads.models import PostDraft
-from snshack_threads.scheduler import PostQueue
+import pytest
+
+from snshack_threads.models import DailySchedule, PostDraft, ScheduleSlot
+from snshack_threads.scheduler import (
+    get_next_available_slots,
+    schedule_posts_for_day,
+)
 
 
-def _make_queue(tmp_path: Path) -> PostQueue:
-    return PostQueue(data_dir=tmp_path)
+class TestSchedulePostsForDay:
+    def test_schedules_up_to_slot_count(self):
+        client = MagicMock()
+        client.schedule_post.return_value = {"data": {"id": "ok"}}
+
+        drafts = [PostDraft(text=f"Post {i}") for i in range(5)]
+        target = datetime(2026, 3, 8)
+        results = schedule_posts_for_day(client, drafts, target)
+
+        assert len(results) == 5
+        assert client.schedule_post.call_count == 5
+
+        # Verify times: 8:00, 11:00, 14:00, 18:00, 21:00
+        calls = client.schedule_post.call_args_list
+        hours = [call.args[1].hour for call in calls]
+        assert hours == [8, 11, 14, 18, 21]
+
+    def test_fewer_drafts_than_slots(self):
+        client = MagicMock()
+        client.schedule_post.return_value = {"data": {"id": "ok"}}
+
+        drafts = [PostDraft(text="Only one")]
+        target = datetime(2026, 3, 8)
+        results = schedule_posts_for_day(client, drafts, target)
+
+        assert len(results) == 1
+        assert client.schedule_post.call_count == 1
+
+    def test_custom_schedule(self):
+        client = MagicMock()
+        client.schedule_post.return_value = {"data": {"id": "ok"}}
+
+        schedule = DailySchedule(
+            slots=[ScheduleSlot(hour=10, minute=30), ScheduleSlot(hour=20, minute=0)]
+        )
+        drafts = [PostDraft(text="A"), PostDraft(text="B")]
+        target = datetime(2026, 3, 8)
+        results = schedule_posts_for_day(client, drafts, target, schedule=schedule)
+
+        assert len(results) == 2
+        calls = client.schedule_post.call_args_list
+        assert calls[0].args[1].hour == 10
+        assert calls[0].args[1].minute == 30
+        assert calls[1].args[1].hour == 20
 
 
-class TestPostQueue:
-    def test_add_and_list(self, tmp_path: Path):
-        q = _make_queue(tmp_path)
-        draft = PostDraft(text="Test post")
-        scheduled = datetime.now() + timedelta(hours=1)
-        entry = q.add(draft, scheduled)
+class TestGetNextAvailableSlots:
+    def test_all_slots_available(self):
+        client = MagicMock()
+        client.get_scheduled_posts.return_value = []
 
-        assert entry.published is False
-        pending = q.list_pending()
-        assert len(pending) == 1
-        assert pending[0].draft.text == "Test post"
+        target = datetime(2026, 3, 8)
+        available = get_next_available_slots(client, target)
 
-    def test_remove(self, tmp_path: Path):
-        q = _make_queue(tmp_path)
-        draft = PostDraft(text="To be removed")
-        entry = q.add(draft, datetime.now())
+        assert len(available) == 5
+        hours = [dt.hour for dt in available]
+        assert hours == [8, 11, 14, 18, 21]
 
-        assert q.remove(entry.id) is True
-        assert q.list_pending() == []
+    def test_some_slots_taken(self):
+        client = MagicMock()
+        client.get_scheduled_posts.return_value = [
+            {"publicationDate": {"dateTime": "2026-03-08T08:00:00"}},
+            {"publicationDate": {"dateTime": "2026-03-08T14:00:00"}},
+        ]
 
-    def test_remove_nonexistent(self, tmp_path: Path):
-        q = _make_queue(tmp_path)
-        assert q.remove("nonexistent") is False
+        target = datetime(2026, 3, 8)
+        available = get_next_available_slots(client, target)
 
-    def test_mark_published(self, tmp_path: Path):
-        q = _make_queue(tmp_path)
-        draft = PostDraft(text="Publish me")
-        entry = q.add(draft, datetime.now())
+        assert len(available) == 3
+        hours = [dt.hour for dt in available]
+        assert hours == [11, 18, 21]
 
-        q.mark_published(entry.id, "post_999")
-        pending = q.list_pending()
-        assert len(pending) == 0
+    def test_all_slots_taken(self):
+        client = MagicMock()
+        client.get_scheduled_posts.return_value = [
+            {"publicationDate": {"dateTime": f"2026-03-08T{h:02d}:00:00"}}
+            for h in [8, 11, 14, 18, 21]
+        ]
 
-        all_items = q.list_all()
-        assert all_items[0].published is True
-        assert all_items[0].published_post_id == "post_999"
+        target = datetime(2026, 3, 8)
+        available = get_next_available_slots(client, target)
 
-    def test_get_due(self, tmp_path: Path):
-        q = _make_queue(tmp_path)
-        past = datetime.now() - timedelta(minutes=5)
-        future = datetime.now() + timedelta(hours=1)
-
-        q.add(PostDraft(text="Past"), past)
-        q.add(PostDraft(text="Future"), future)
-
-        due = q.get_due()
-        assert len(due) == 1
-        assert due[0].draft.text == "Past"
-
-    def test_list_pending_order(self, tmp_path: Path):
-        q = _make_queue(tmp_path)
-        t1 = datetime.now() + timedelta(hours=3)
-        t2 = datetime.now() + timedelta(hours=1)
-        t3 = datetime.now() + timedelta(hours=2)
-
-        q.add(PostDraft(text="Third"), t1)
-        q.add(PostDraft(text="First"), t2)
-        q.add(PostDraft(text="Second"), t3)
-
-        pending = q.list_pending()
-        assert [p.draft.text for p in pending] == ["First", "Second", "Third"]
+        assert len(available) == 0
