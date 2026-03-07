@@ -2,6 +2,8 @@
 
 Supports batch scheduling of multiple posts per day (default: 5).
 Time slots are determined by CSV analytics data for optimal engagement.
+Day-of-week specific optimization is used when available.
+All posts are validated against NG rules before scheduling.
 """
 
 from __future__ import annotations
@@ -12,11 +14,21 @@ from typing import Any
 
 from .api import MetricoolClient
 from .config import Settings, get_settings
+from .content_guard import check_ng
 from .csv_analyzer import analyze_optimal_times
 from .models import DailySchedule, PostDraft, ScheduleSlot
 
 # Fallback CSV location (repo root) when THREADS_CSV_PATH is not set
 _REPO_ROOT_CSV = Path(__file__).resolve().parent.parent.parent / "スレッズ.csv"
+
+
+class ContentNGError(Exception):
+    """Raised when post content violates NG rules."""
+
+    def __init__(self, text: str, violations: list[str]):
+        self.text = text
+        self.violations = violations
+        super().__init__(f"NG detected: {', '.join(violations)}")
 
 
 def _resolve_csv_path(csv_path: str | Path | None = None) -> Path | None:
@@ -35,20 +47,34 @@ def _resolve_csv_path(csv_path: str | Path | None = None) -> Path | None:
     return _REPO_ROOT_CSV if _REPO_ROOT_CSV.exists() else None
 
 
-def get_optimal_schedule(csv_path: str | Path | None = None, n_slots: int = 5) -> DailySchedule:
+def _get_analysis(csv_path: str | Path | None = None):
+    """Get CSV analysis result, or None if unavailable."""
+    resolved = _resolve_csv_path(csv_path)
+    if resolved is None:
+        return None
+    return analyze_optimal_times(resolved)
+
+
+def get_optimal_schedule(
+    csv_path: str | Path | None = None,
+    n_slots: int = 5,
+    day_of_week: int | None = None,
+) -> DailySchedule:
     """Build a DailySchedule by analyzing the account's CSV data.
 
     Time slots are always derived from the data — never hardcoded.
-    Different accounts/genres will produce different optimal schedules.
+    When day_of_week is provided, uses day-specific patterns.
 
     Falls back to default fixed slots only if no CSV is available.
     """
-    resolved = _resolve_csv_path(csv_path)
-    if resolved is None:
+    analysis = _get_analysis(csv_path)
+    if analysis is None:
         return DailySchedule()
 
-    result = analyze_optimal_times(resolved)
-    optimal = result.get_optimal_slots(n=n_slots)
+    if day_of_week is not None:
+        optimal = analysis.get_optimal_slots_for_day(day_of_week, n=n_slots)
+    else:
+        optimal = analysis.get_optimal_slots(n=n_slots)
 
     if not optimal:
         return DailySchedule()
@@ -56,6 +82,14 @@ def get_optimal_schedule(csv_path: str | Path | None = None, n_slots: int = 5) -
     return DailySchedule(
         slots=[ScheduleSlot(hour=h, minute=m) for h, m in optimal]
     )
+
+
+def validate_drafts(drafts: list[PostDraft]) -> None:
+    """Validate all drafts against NG rules. Raises ContentNGError on violation."""
+    for draft in drafts:
+        violations = check_ng(draft.text)
+        if violations:
+            raise ContentNGError(draft.text, violations)
 
 
 def schedule_posts_for_day(
@@ -66,17 +100,13 @@ def schedule_posts_for_day(
 ) -> list[dict[str, Any]]:
     """Schedule multiple posts for a single day at optimal time slots.
 
-    Args:
-        client: Metricool API client.
-        drafts: List of post drafts (up to len(schedule.slots)).
-        date: The target date.
-        schedule: Time slots. If None, uses CSV-derived optimal times.
-
-    Returns:
-        List of API responses for each scheduled post.
+    Uses day-of-week specific optimal times when schedule is not provided.
+    Validates all drafts against NG rules before scheduling.
     """
+    validate_drafts(drafts)
+
     if schedule is None:
-        schedule = get_optimal_schedule()
+        schedule = get_optimal_schedule(day_of_week=date.weekday())
 
     results: list[dict[str, Any]] = []
     for i, draft in enumerate(drafts):
@@ -100,14 +130,7 @@ def schedule_posts_for_week(
 ) -> dict[str, list[dict[str, Any]]]:
     """Schedule posts for multiple days.
 
-    Args:
-        client: Metricool API client.
-        daily_drafts: Mapping of date string (YYYY-MM-DD) to list of drafts.
-        start_date: Starting date for the scheduling period.
-        schedule: Time slots per day.
-
-    Returns:
-        Mapping of date string to list of API responses.
+    Each day uses its own day-of-week optimal schedule unless overridden.
     """
     results: dict[str, list[dict[str, Any]]] = {}
 
@@ -126,15 +149,14 @@ def get_next_available_slots(
 ) -> list[datetime]:
     """Find available time slots for a given day.
 
-    Checks already-scheduled posts and returns slots that are still free.
+    Uses day-of-week specific optimal times.
     """
     if schedule is None:
-        schedule = get_optimal_schedule()
+        schedule = get_optimal_schedule(day_of_week=date.weekday())
 
     date_str = date.strftime("%Y-%m-%d")
     existing = client.get_scheduled_posts(date_str, date_str)
 
-    # Get existing scheduled times
     scheduled_hours: set[int] = set()
     for post in existing:
         pub_date = post.get("publicationDate", {})
@@ -146,7 +168,6 @@ def get_next_available_slots(
             except ValueError:
                 pass
 
-    # Return slots that don't conflict
     available: list[datetime] = []
     for slot in schedule.slots:
         if slot.hour not in scheduled_hours:

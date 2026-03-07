@@ -17,6 +17,8 @@ app = typer.Typer(
 )
 console = Console()
 
+_DOW_NAMES = ["月", "火", "水", "木", "金", "土", "日"]
+
 
 def _get_client():
     from .api import MetricoolClient
@@ -89,9 +91,21 @@ def posts(
 def schedule(
     text: str = typer.Argument(help="Post text (max 500 chars)"),
     at: str = typer.Option(help="Publish time (YYYY-MM-DD HH:MM)"),
+    add_cta: bool = typer.Option(False, "--cta", help="Append engagement CTA"),
 ):
     """Schedule a single Threads post via Metricool."""
+    from .content_guard import append_cta, check_ng
     from .models import PostDraft
+
+    # NG check
+    violations = check_ng(text)
+    if violations:
+        console.print(f"[red]NG detected:[/red] {', '.join(violations)}")
+        console.print("外部リンク/LINE/固定投稿への誘導はリーチが激減するため禁止です。")
+        raise typer.Exit(1)
+
+    if add_cta:
+        text = append_cta(text)
 
     publish_at = datetime.strptime(at, "%Y-%m-%d %H:%M")
     draft = PostDraft(text=text)
@@ -108,19 +122,24 @@ def schedule_day(
     date: str = typer.Argument(help="Target date (YYYY-MM-DD)"),
     texts: list[str] = typer.Option([], "--text", "-t", help="Post texts (up to 5)"),
     file: str | None = typer.Option(None, "--file", "-f", help="File with one post text per line"),
+    add_cta: bool = typer.Option(False, "--cta", help="Append engagement CTA to each post"),
 ):
-    """Schedule up to 5 posts for a day at data-driven optimal time slots.
+    """Schedule up to 5 posts at data-driven optimal times for the day.
 
-    Time slots are automatically determined by analyzing the CSV export data.
+    Time slots use day-of-week specific patterns from CSV analysis.
+    All posts are validated against NG rules (no external links/LINE/etc).
 
     Examples:
-      snshack schedule-day 2026-03-08 -t "朝の投稿" -t "昼の投稿" -t "午後" -t "夕方" -t "夜"
+      snshack schedule-day 2026-03-08 -t "朝の投稿" -t "昼の投稿" --cta
       snshack schedule-day 2026-03-08 -f posts.txt
     """
+    from .content_guard import append_cta as _append_cta
+    from .content_guard import check_ng
     from .models import PostDraft
-    from .scheduler import schedule_posts_for_day
+    from .scheduler import ContentNGError, schedule_posts_for_day
 
     target = datetime.strptime(date, "%Y-%m-%d")
+    dow_name = _DOW_NAMES[target.weekday()]
 
     # Collect drafts from --text args or --file
     all_texts: list[str] = list(texts)
@@ -138,15 +157,31 @@ def schedule_day(
         console.print(f"[yellow]Warning:[/yellow] {len(all_texts)} texts provided, only first 5 will be scheduled.")
         all_texts = all_texts[:5]
 
+    # NG check before anything else
+    for i, t in enumerate(all_texts):
+        violations = check_ng(t)
+        if violations:
+            console.print(f"[red]Post {i + 1} NG:[/red] {', '.join(violations)}")
+            console.print(f"  Text: {t[:80]}...")
+            console.print("外部リンク/LINE/固定投稿への誘導はリーチが激減するため禁止です。")
+            raise typer.Exit(1)
+
+    if add_cta:
+        all_texts = [_append_cta(t) for t in all_texts]
+
     drafts = [PostDraft(text=t) for t in all_texts]
 
-    with _get_client() as client:
-        results = schedule_posts_for_day(client, drafts, target)
+    try:
+        with _get_client() as client:
+            results = schedule_posts_for_day(client, drafts, target)
+    except ContentNGError as e:
+        console.print(f"[red]NG detected:[/red] {e}")
+        raise typer.Exit(1)
 
-    console.print(f"[green]Scheduled {len(results)} posts for {date}![/green]")
+    console.print(f"[green]Scheduled {len(results)} posts for {date} ({dow_name})![/green]")
     from .scheduler import get_optimal_schedule
 
-    schedule = get_optimal_schedule()
+    schedule = get_optimal_schedule(day_of_week=target.weekday())
     for i, _result in enumerate(results):
         slot = schedule.slots[i]
         console.print(f"  {slot.hour:02d}:{slot.minute:02d} - {all_texts[i][:60]}")
@@ -193,29 +228,50 @@ def slots(
         default=None, help="Target date (YYYY-MM-DD), defaults to today"
     ),
 ):
-    """Show available time slots for a day (based on CSV analytics)."""
+    """Show available time slots for a day (day-of-week optimized)."""
     from .scheduler import get_next_available_slots
 
     target = datetime.strptime(date, "%Y-%m-%d") if date else datetime.now()
+    dow_name = _DOW_NAMES[target.weekday()]
 
     with _get_client() as client:
         available = get_next_available_slots(client, target)
 
     if not available:
-        console.print(f"No available slots for {target.strftime('%Y-%m-%d')}.")
+        console.print(f"No available slots for {target.strftime('%Y-%m-%d')} ({dow_name}).")
         return
 
-    console.print(f"[bold]Available slots for {target.strftime('%Y-%m-%d')} (data-driven):[/bold]")
+    console.print(f"[bold]Available slots for {target.strftime('%Y-%m-%d')} ({dow_name}):[/bold]")
     for dt in available:
         console.print(f"  {dt.strftime('%H:%M')}")
 
 
 @app.command()
-def best_times(
-    csv_file: str = typer.Option(None, "--csv", "-c", help="Path to CSV file (defaults to スレッズ.csv in repo root)"),
-    top: int = typer.Option(10, help="Number of top hours to show"),
+def check_text(
+    text: str = typer.Argument(help="Post text to validate"),
 ):
-    """Analyze CSV data and show optimal posting times by hour."""
+    """Check if post text passes NG rules."""
+    from .content_guard import check_ng, suggest_cta
+
+    violations = check_ng(text)
+    if violations:
+        console.print(f"[red]NG:[/red] {', '.join(violations)}")
+        console.print("外部リンク/LINE/固定投稿への誘導はリーチが激減するため禁止です。")
+    else:
+        console.print("[green]OK[/green] - NG項目なし")
+
+    console.print()
+    console.print(f"[dim]CTA候補: {suggest_cta()}[/dim]")
+
+
+@app.command()
+def best_times(
+    csv_file: str = typer.Option(None, "--csv", "-c", help="Path to CSV file"),
+    top: int = typer.Option(10, help="Number of top hours to show"),
+    day: str = typer.Option(None, "--day", "-d", help="Day of week (月火水木金土日)"),
+):
+    """Analyze CSV data and show optimal posting times."""
+    from .csv_analyzer import _DOW_NAMES as dow_names
     from .csv_analyzer import analyze_optimal_times
     from .scheduler import _resolve_csv_path
 
@@ -233,6 +289,7 @@ def best_times(
     console.print(f"[bold]Optimal Posting Times[/bold] ({result.total_posts} posts analyzed)")
     console.print()
 
+    # ── Hour-by-Hour table ──
     table = Table(title="Hour-by-Hour Performance")
     table.add_column("Hour", justify="center")
     table.add_column("Posts", justify="right")
@@ -240,15 +297,14 @@ def best_times(
     table.add_column("Avg Likes", justify="right")
     table.add_column("Avg Eng.%", justify="right")
     table.add_column("Score", justify="right")
-    table.add_column("Rank", justify="center")
+    table.add_column("Reliable", justify="center")
 
-    # Sort by score descending
     active = [hs for hs in result.hour_stats.values() if hs.post_count > 0]
     active.sort(key=lambda h: h.score, reverse=True)
 
     for rank, hs in enumerate(active[:top], 1):
         style = "bold green" if rank <= 5 else ""
-        medal = {1: "1st", 2: "2nd", 3: "3rd"}.get(rank, f"{rank}th")
+        reliable_mark = "o" if hs.reliable else "x"
         table.add_row(
             f"{hs.hour:02d}:00",
             str(hs.post_count),
@@ -256,18 +312,91 @@ def best_times(
             f"{hs.avg_likes:,.1f}",
             f"{hs.avg_engagement:.2f}%",
             f"{hs.score:,.0f}",
-            medal,
+            reliable_mark,
             style=style,
         )
 
     console.print(table)
 
-    # Show recommended schedule
+    # ── Day-of-week breakdown ──
+    if day:
+        dow_idx = dow_names.index(day) if day in dow_names else None
+        if dow_idx is not None:
+            _show_day_breakdown(result, dow_idx, day)
+    else:
+        console.print()
+        console.print("[bold]Day-of-Week Best Slots:[/bold]")
+        for d in range(7):
+            slots = result.get_optimal_slots_for_day(d, n=3)
+            times = ", ".join(f"{h:02d}:{m:02d}" for h, m in slots)
+            console.print(f"  {dow_names[d]}: {times}")
+
+    # ── Recommended overall schedule ──
     optimal = result.get_optimal_slots(n=5)
     console.print()
-    console.print("[bold]Recommended daily schedule (top 5 slots):[/bold]")
+    console.print("[bold]Recommended daily schedule (top 5):[/bold]")
     for h, m in optimal:
         console.print(f"  {h:02d}:{m:02d}")
+
+    # ── Content insights ──
+    _show_content_insights(result)
+
+
+def _show_day_breakdown(result, dow_idx: int, day_name: str):
+    """Show detailed hour breakdown for a specific day."""
+    console.print()
+    table = Table(title=f"{day_name}曜日 Hour Breakdown")
+    table.add_column("Hour", justify="center")
+    table.add_column("Posts", justify="right")
+    table.add_column("Avg Views", justify="right")
+    table.add_column("Score", justify="right")
+
+    day_stats = [
+        dh for (d, h), dh in result.day_hour_stats.items()
+        if d == dow_idx and dh.post_count > 0
+    ]
+    day_stats.sort(key=lambda dh: dh.score, reverse=True)
+
+    for dh in day_stats[:10]:
+        table.add_row(
+            f"{dh.hour:02d}:00",
+            str(dh.post_count),
+            f"{dh.avg_views:,.0f}",
+            f"{dh.score:,.0f}",
+        )
+
+    console.print(table)
+
+
+def _show_content_insights(result):
+    """Show content pattern analysis."""
+    cp = result.content
+    console.print()
+    console.print("[bold]Content Insights[/bold]")
+
+    # Length buckets
+    console.print()
+    console.print("  [bold]Text Length vs Performance:[/bold]")
+    for bucket_name, label in [("short", "<100字"), ("medium", "100-300字"), ("long", "300字+")]:
+        bhs = cp.length_buckets.get(bucket_name)
+        if bhs and bhs.post_count > 0:
+            console.print(f"    {label}: {bhs.post_count}posts, avg {bhs.avg_views:,.0f} views, avg {bhs.avg_likes:,.1f} likes")
+
+    # Hook patterns
+    if cp.hook_patterns:
+        console.print()
+        console.print("  [bold]Hook Pattern Performance:[/bold]")
+        sorted_hooks = sorted(cp.hook_patterns.items(), key=lambda x: x[1].avg_views, reverse=True)
+        for hook_name, hhs in sorted_hooks:
+            console.print(f"    {hook_name}: {hhs.post_count}posts, avg {hhs.avg_views:,.0f} views")
+
+    # Link penalty
+    if cp.link_post_avg_views > 0 and cp.no_link_post_avg_views > 0:
+        penalty_pct = (1 - cp.link_post_avg_views / cp.no_link_post_avg_views) * 100
+        console.print()
+        console.print(f"  [bold]Link Penalty:[/bold] avg views {cp.link_post_avg_views:,.0f} (with link) vs {cp.no_link_post_avg_views:,.0f} (without)")
+        if penalty_pct > 0:
+            console.print(f"    [red]External links reduce reach by ~{penalty_pct:.0f}%[/red]")
 
 
 # ── analytics ────────────────────────────────────────────────

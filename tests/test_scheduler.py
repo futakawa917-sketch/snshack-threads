@@ -7,9 +7,11 @@ import pytest
 
 from snshack_threads.models import DailySchedule, PostDraft, ScheduleSlot
 from snshack_threads.scheduler import (
+    ContentNGError,
     get_next_available_slots,
     get_optimal_schedule,
     schedule_posts_for_day,
+    validate_drafts,
 )
 
 # Explicit schedule for deterministic tests
@@ -120,6 +122,32 @@ class TestGetNextAvailableSlots:
         available = get_next_available_slots(client, target, schedule=_TEST_SCHEDULE)
 
         assert len(available) == 0
+
+
+class TestValidateDrafts:
+    def test_clean_drafts_pass(self):
+        drafts = [PostDraft(text="補助金を活用しましょう")]
+        validate_drafts(drafts)  # Should not raise
+
+    def test_ng_draft_raises(self):
+        drafts = [PostDraft(text="詳しくはhttps://example.com")]
+        with pytest.raises(ContentNGError) as exc_info:
+            validate_drafts(drafts)
+        assert "URL" in exc_info.value.violations
+
+    def test_line_draft_raises(self):
+        drafts = [PostDraft(text="LINE公式に登録してね")]
+        with pytest.raises(ContentNGError):
+            validate_drafts(drafts)
+
+    def test_ng_blocks_scheduling(self):
+        client = MagicMock()
+        drafts = [PostDraft(text="固定投稿を見てください")]
+        target = datetime(2026, 3, 8)
+        with pytest.raises(ContentNGError):
+            schedule_posts_for_day(client, drafts, target, schedule=_TEST_SCHEDULE)
+        # Should not have called the API
+        assert client.schedule_post.call_count == 0
 
 
 class TestGetOptimalSchedule:
