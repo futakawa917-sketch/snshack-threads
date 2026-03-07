@@ -45,11 +45,15 @@ run_daily() {
         snshack --profile "$profile" competitor scrape >> "$logfile" 2>&1 || true
     fi
 
-    # 4. Refresh Threads API token if expiring within 14 days
+    # 4. Auto-research: keyword search → competitor discovery → hook analysis
+    echo "[$(date)] Running auto-research..." >> "$logfile"
+    snshack --profile "$profile" auto-research >> "$logfile" 2>&1 || true
+
+    # 5. Refresh Threads API token if expiring within 14 days
     echo "[$(date)] Checking token..." >> "$logfile"
     snshack --profile "$profile" threads refresh-token >> "$logfile" 2>&1 || true
 
-    # 5. Auto-generate and schedule today's 5 posts
+    # 6. Auto-generate and schedule today's 5 posts (uses research data)
     echo "[$(date)] Running autopilot..." >> "$logfile"
     snshack --profile "$profile" autopilot >> "$logfile" 2>&1 || true
 

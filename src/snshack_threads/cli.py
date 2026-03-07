@@ -2056,6 +2056,35 @@ def _load_profile_hooks() -> None:
         load_custom_hooks(industry=industry or None, custom_hooks=custom_hooks or None)
 
 
+# ── Auto Research ──────────────────────────────────────────
+
+@app.command("auto-research")
+def auto_research_cmd(
+    max_competitors: int = typer.Option(10, help="Max competitors to auto-register"),
+):
+    """Run automated competitor research (keyword search + auto-register)."""
+    from .auto_research import run_auto_research
+
+    console.print("[bold]Running auto-research...[/bold]")
+    report = run_auto_research(profile=_active_profile, max_competitors=max_competitors)
+
+    console.print(f"  Keywords searched: {len(report.keywords_searched)}")
+    console.print(f"  Posts found: {report.total_posts_found}")
+    console.print(f"  Accounts discovered: {len(report.discovered_accounts)}")
+
+    if report.auto_registered:
+        console.print(f"  [green]Auto-registered: {', '.join('@' + u for u in report.auto_registered)}[/green]")
+
+    if report.trending_hooks:
+        console.print("\n  [bold]Trending hooks:[/bold]")
+        for h in report.trending_hooks[:5]:
+            console.print(f"    {h['hook']}: avg {h['avg_likes']:.0f} likes ({h['count']} posts)")
+
+    if report.errors:
+        for e in report.errors:
+            console.print(f"  [yellow]{e}[/yellow]")
+
+
 # ── CSV sync ───────────────────────────────────────────────
 
 @app.command("sync-csv")

@@ -133,6 +133,7 @@ def main():
         "- **概要** — 全体の成績\n"
         "- **投稿** — 手動投稿・履歴\n"
         "- **自動投稿** — AI自動生成\n"
+        "- **リサーチ** — 自動競合分析の結果\n"
         "- **競合分析** — 競合ウォッチ\n"
         "- **フォロワー** — 推移グラフ\n"
         "- **通知** — Slack/Email設定\n"
@@ -144,6 +145,7 @@ def main():
         "概要",
         "投稿",
         "自動投稿",
+        "リサーチ",
         "競合分析",
         "フォロワー",
         "通知",
@@ -157,12 +159,14 @@ def main():
     with tabs[2]:
         _render_autopilot(st, settings, selected_profile)
     with tabs[3]:
-        _render_competitors(st, settings, selected_profile)
+        _render_research(st, settings, selected_profile)
     with tabs[4]:
-        _render_followers(settings)
+        _render_competitors(st, settings, selected_profile)
     with tabs[5]:
-        _render_notifications(st, selected_profile)
+        _render_followers(settings)
     with tabs[6]:
+        _render_notifications(st, selected_profile)
+    with tabs[7]:
         _render_settings(st, selected_profile, settings)
 
 
@@ -546,6 +550,149 @@ def _render_autopilot(st, settings, profile):
                 else:
                     st.info("プレビューモード — 実際には投稿されていません")
 
+            except Exception as e:
+                st.error(f"エラー: {e}")
+
+
+# ── Research ──────────────────────────────────────────────
+
+
+def _render_research(st, settings, profile):
+    st.markdown('<div class="section-header">自動リサーチ結果</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="help-box">'
+        "毎日自動で設定キーワードを検索し、競合アカウントの発見・フックパターンの分析を行っています。"
+        "結果はAutopilotにも自動反映されます。"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    # Show configured keywords
+    keywords = settings.get_research_keywords()
+    if keywords:
+        st.markdown(f"**検索キーワード:** {', '.join(keywords)}")
+    else:
+        st.warning(
+            "リサーチキーワードが未設定です。「設定」タブの「リサーチキーワード」に入力してください。"
+        )
+
+    # Load latest report
+    from .auto_research import get_latest_report
+
+    report = get_latest_report(profile=profile)
+
+    if not report:
+        st.info("まだリサーチが実行されていません。cronで毎日自動実行されます。")
+
+        if st.button("今すぐリサーチを実行", use_container_width=True):
+            if not keywords:
+                st.error("先にリサーチキーワードを設定してください")
+            else:
+                with st.spinner("リサーチ中...（APIでキーワード検索しています）"):
+                    try:
+                        from .auto_research import run_auto_research
+
+                        result = run_auto_research(profile=profile)
+                        st.success(
+                            f"完了！ {result.total_posts_found}件の投稿を分析、"
+                            f"{len(result.discovered_accounts)}アカウント発見、"
+                            f"{len(result.auto_registered)}件自動登録"
+                        )
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"エラー: {e}")
+        return
+
+    # Report summary
+    st.markdown(f"**最終実行日:** {report.get('date', 'N/A')}")
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("検索キーワード数", len(report.get("keywords_searched", [])))
+    col2.metric("発見した投稿数", report.get("total_posts_found", 0))
+    col3.metric("発見アカウント数", len(report.get("discovered_accounts", [])))
+    col4.metric("自動登録数", len(report.get("auto_registered", [])))
+
+    # Auto-registered
+    auto_reg = report.get("auto_registered", [])
+    if auto_reg:
+        st.markdown(
+            f'<div class="help-box">'
+            f"今回新たに競合として自動登録: "
+            f"{'、'.join('@' + u for u in auto_reg)}"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    # Trending hooks
+    trending = report.get("trending_hooks", [])
+    if trending:
+        st.markdown('<div class="section-header">トレンドフック（競合で伸びてるパターン）</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="help-box">'
+            "キーワード検索で見つかった投稿から、エンゲージメントの高い書き出しパターンを分析しています。"
+            "これらのパターンはAutopilotの投稿生成にも自動で反映されます。"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+        hook_table = []
+        for h in trending[:10]:
+            hook_table.append({
+                "フック": h.get("hook", ""),
+                "使用数": h.get("count", 0),
+                "平均いいね": f"{h.get('avg_likes', 0):.1f}",
+                "合計いいね": h.get("total_likes", 0),
+            })
+        st.table(hook_table)
+
+    # Discovered accounts
+    discovered = report.get("discovered_accounts", [])
+    if discovered:
+        st.markdown('<div class="section-header">発見したアカウント（上位）</div>', unsafe_allow_html=True)
+
+        for acc in discovered[:10]:
+            username = acc.get("username", "")
+            avg_likes = acc.get("avg_likes", 0)
+            posts_found = acc.get("total_posts_found", 0)
+            top_hooks = acc.get("top_hooks", [])
+            via = acc.get("discovered_via", [])
+
+            with st.expander(
+                f"@{username} — 平均{avg_likes:.0f}いいね / {posts_found}投稿"
+            ):
+                col1, col2 = st.columns(2)
+                col1.metric("平均いいね", f"{avg_likes:.1f}")
+                col2.metric("発見投稿数", posts_found)
+
+                if top_hooks:
+                    st.markdown(f"**使用フック:** {', '.join(top_hooks)}")
+                if via:
+                    st.caption(f"発見キーワード: {', '.join(via)}")
+
+                samples = acc.get("sample_posts", [])
+                if samples:
+                    st.caption("投稿サンプル:")
+                    for p in samples[:3]:
+                        st.text(f"  {p.get('likes', 0)} いいね — {p.get('text', '')[:80]}")
+
+    # Errors
+    errors = report.get("errors", [])
+    if errors:
+        st.divider()
+        st.warning("実行時のエラー:")
+        for e in errors:
+            st.caption(e)
+
+    # Manual trigger
+    st.divider()
+    if st.button("リサーチを再実行", use_container_width=True):
+        with st.spinner("リサーチ中..."):
+            try:
+                from .auto_research import run_auto_research
+
+                result = run_auto_research(profile=profile)
+                st.success(f"完了！ {result.total_posts_found}件分析")
+                st.rerun()
             except Exception as e:
                 st.error(f"エラー: {e}")
 

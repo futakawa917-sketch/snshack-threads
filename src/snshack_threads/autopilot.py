@@ -160,6 +160,19 @@ def generate_daily_plan(
                     hook_performance[hook] = 0.0
                 hook_performance[hook] = max(hook_performance[hook], record.views)
 
+    # Merge competitor research hooks (boost from trending hooks)
+    try:
+        from .auto_research import get_competitor_hooks
+        competitor_hooks = get_competitor_hooks(profile=profile)
+        for hook, avg_likes in competitor_hooks.items():
+            if hook not in hook_performance:
+                hook_performance[hook] = avg_likes * 10  # Scale likes to view-equivalent
+            else:
+                # Boost existing hooks that competitors also find effective
+                hook_performance[hook] *= 1.2
+    except Exception:
+        pass  # Competitor data is supplementary, don't fail autopilot
+
     # Determine hooks for today
     all_hook_names = [name for name, _ in get_active_hooks()]
     recyclable = find_recyclable_posts(history, min_views=500)
