@@ -25,6 +25,30 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class MetricSnapshot:
+    """A point-in-time metrics snapshot for early velocity tracking."""
+
+    collected_at: str  # ISO datetime
+    elapsed_hours: int  # Hours since post was published
+    views: int = 0
+    likes: int = 0
+    replies: int = 0
+
+    def to_dict(self) -> dict:
+        return {
+            "collected_at": self.collected_at,
+            "elapsed_hours": self.elapsed_hours,
+            "views": self.views,
+            "likes": self.likes,
+            "replies": self.replies,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> MetricSnapshot:
+        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+
+
+@dataclass
 class PostRecord:
     """A single post's lifecycle record."""
 
@@ -41,6 +65,9 @@ class PostRecord:
     quotes: int = 0
     engagement: float = 0.0
 
+    # Early velocity snapshots (1h, 3h, etc.)
+    snapshots: list[MetricSnapshot] = field(default_factory=list)
+
     # Tracking
     metricool_response: dict = field(default_factory=dict)
     collected_at: str = ""  # When metrics were last collected
@@ -53,13 +80,23 @@ class PostRecord:
     def has_metrics(self) -> bool:
         return self.status == "collected"
 
+    @property
+    def char_count(self) -> int:
+        """Character count of the post text."""
+        return len(self.text)
+
     def to_dict(self) -> dict:
         d = asdict(self)
+        # Serialize snapshots properly
+        d["snapshots"] = [s.to_dict() for s in self.snapshots]
         return d
 
     @classmethod
     def from_dict(cls, d: dict) -> PostRecord:
-        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+        raw_snapshots = d.pop("snapshots", [])
+        record = cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+        record.snapshots = [MetricSnapshot.from_dict(s) for s in raw_snapshots]
+        return record
 
 
 def _char_ngrams(text: str, n: int = 3) -> set[str]:
@@ -169,6 +206,48 @@ class PostHistory:
         record.status = "collected"
         record.collected_at = datetime.now().isoformat()
         self._save()
+
+    def add_snapshot(
+        self,
+        record: PostRecord,
+        views: int,
+        likes: int,
+        replies: int,
+    ) -> MetricSnapshot:
+        """Add an early velocity snapshot to a post record."""
+        scheduled = datetime.fromisoformat(record.scheduled_at)
+        elapsed = int((datetime.now() - scheduled).total_seconds() / 3600)
+
+        snapshot = MetricSnapshot(
+            collected_at=datetime.now().isoformat(),
+            elapsed_hours=max(elapsed, 1),
+            views=views,
+            likes=likes,
+            replies=replies,
+        )
+        record.snapshots.append(snapshot)
+        self._save()
+        return snapshot
+
+    def get_early_collection(self, max_age_hours: int = 6) -> list[PostRecord]:
+        """Get posts eligible for early velocity tracking.
+
+        Returns posts between 1 and max_age_hours old that haven't been
+        fully collected yet.
+        """
+        now = datetime.now()
+        result = []
+        for r in self._records:
+            if r.status == "collected":
+                continue
+            try:
+                scheduled = datetime.fromisoformat(r.scheduled_at)
+            except ValueError:
+                continue
+            elapsed = (now - scheduled).total_seconds() / 3600
+            if 1 <= elapsed <= max_age_hours:
+                result.append(r)
+        return result
 
     def get_all(self) -> list[PostRecord]:
         """Return all post records."""
