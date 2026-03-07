@@ -89,12 +89,31 @@ def get_optimal_schedule(
     )
 
 
-def validate_drafts(drafts: list[PostDraft]) -> None:
-    """Validate all drafts against NG rules. Raises ContentNGError on violation."""
+def validate_drafts(drafts: list[PostDraft], history: PostHistory | None = None) -> list[str]:
+    """Validate all drafts against NG rules and check for duplicates.
+
+    Raises ContentNGError on NG violation.
+    Returns list of similarity warnings (non-blocking).
+    """
+    warnings: list[str] = []
+
     for draft in drafts:
         violations = check_ng(draft.text)
         if violations:
             raise ContentNGError(draft.text, violations)
+
+    # Check for content similarity with recent posts
+    if history is not None:
+        for draft in drafts:
+            similar = history.check_similarity(draft.text)
+            if similar:
+                warnings.append(
+                    f"Similar to recent post: '{draft.text[:40]}...' "
+                    f"matches '{similar[0].text[:40]}...'"
+                )
+                logger.warning("Duplicate content detected: %s", warnings[-1])
+
+    return warnings
 
 
 def schedule_posts_for_day(
@@ -110,13 +129,13 @@ def schedule_posts_for_day(
     Validates all drafts against NG rules before scheduling.
     Records each post in history for later performance tracking.
     """
-    validate_drafts(drafts)
+    if history is None:
+        history = PostHistory()
+
+    validate_drafts(drafts, history=history)
 
     if schedule is None:
         schedule = get_optimal_schedule(day_of_week=date.weekday())
-
-    if history is None:
-        history = PostHistory()
 
     results: list[dict[str, Any]] = []
     errors: list[tuple[int, str]] = []

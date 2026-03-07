@@ -67,8 +67,8 @@ def generate_report(
     total_quotes = sum(p.quotes for p in posts)
     total_interactions = sum(p.interactions for p in posts)
 
-    rates = [p.engagement for p in posts if p.engagement > 0]
-    avg_rate = sum(rates) / len(rates) if rates else 0.0
+    rates = [p.engagement for p in posts]
+    avg_rate = sum(rates) / len(posts) if posts else 0.0
 
     top_posts = sorted(posts, key=lambda p: p.interactions, reverse=True)[:top_n]
 

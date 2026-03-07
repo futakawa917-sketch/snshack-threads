@@ -11,12 +11,17 @@ Data is stored as JSON in ~/.snshack-threads/post_history.json
 from __future__ import annotations
 
 import json
+import logging
+import os
+import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from .config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -57,6 +62,14 @@ class PostRecord:
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
+def _char_ngrams(text: str, n: int = 3) -> set[str]:
+    """Extract character n-grams for similarity comparison."""
+    text = text.strip()
+    if len(text) < n:
+        return {text} if text else set()
+    return {text[i:i + n] for i in range(len(text) - n + 1)}
+
+
 class PostHistory:
     """Persistent post history manager."""
 
@@ -75,14 +88,36 @@ class PostHistory:
                 data = json.loads(self._path.read_text(encoding="utf-8"))
                 self._records = [PostRecord.from_dict(r) for r in data]
             except (json.JSONDecodeError, KeyError):
+                logger.warning("Corrupted history file: %s — starting with backup", self._path)
+                # Back up corrupted file instead of silently losing data
+                backup = self._path.with_suffix(".json.bak")
+                try:
+                    self._path.rename(backup)
+                    logger.warning("Corrupted file backed up to: %s", backup)
+                except OSError:
+                    pass
                 self._records = []
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(
-            json.dumps([r.to_dict() for r in self._records], ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        content = json.dumps(
+            [r.to_dict() for r in self._records], ensure_ascii=False, indent=2
         )
+        # Atomic write: write to temp file, then rename
+        fd, tmp_path = tempfile.mkstemp(
+            dir=self._path.parent, suffix=".tmp", prefix="history_"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+            os.replace(tmp_path, self._path)
+        except Exception:
+            # Clean up temp file on failure
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def record_scheduled(
         self,
@@ -150,6 +185,37 @@ class PostHistory:
     def get_uncollected(self) -> list[PostRecord]:
         """Return posts that haven't had metrics collected yet."""
         return [r for r in self._records if not r.has_metrics]
+
+    def check_similarity(self, new_text: str, lookback: int = 50) -> list[PostRecord]:
+        """Check if new text is too similar to recent posts.
+
+        Uses character n-gram Jaccard similarity to detect near-duplicates.
+        Threads suppresses repetitive content, so this prevents self-sabotage.
+
+        Args:
+            new_text: Text to check.
+            lookback: Number of recent posts to compare against.
+
+        Returns:
+            List of similar posts (Jaccard > 0.6).
+        """
+        new_ngrams = _char_ngrams(new_text)
+        if not new_ngrams:
+            return []
+
+        recent = self._records[-lookback:] if len(self._records) > lookback else self._records
+        similar = []
+        for record in recent:
+            old_ngrams = _char_ngrams(record.text)
+            if not old_ngrams:
+                continue
+            intersection = new_ngrams & old_ngrams
+            union = new_ngrams | old_ngrams
+            jaccard = len(intersection) / len(union) if union else 0
+            if jaccard > 0.6:
+                similar.append(record)
+
+        return similar
 
     @property
     def count(self) -> int:

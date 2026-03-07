@@ -159,7 +159,7 @@ class CSVAnalysisResult:
         for hs in ranked:
             if len(selected) >= n:
                 break
-            if all(abs(hs.hour - s) >= 2 for s in selected):
+            if all(_hour_distance(hs.hour, s) >= 2 for s in selected):
                 selected.append(hs.hour)
 
         selected.sort()
@@ -180,7 +180,7 @@ class CSVAnalysisResult:
         for dh in day_stats:
             if len(selected) >= n:
                 break
-            if all(abs(dh.hour - s) >= 2 for s in selected):
+            if all(_hour_distance(dh.hour, s) >= 2 for s in selected):
                 selected.append(dh.hour)
 
         # If not enough day-specific slots, fill from overall
@@ -189,25 +189,40 @@ class CSVAnalysisResult:
             for h, m in overall:
                 if len(selected) >= n:
                     break
-                if all(abs(h - s) >= 2 for s in selected):
+                if all(_hour_distance(h, s) >= 2 for s in selected):
                     selected.append(h)
 
         selected.sort()
         return [(h, 0) for h in selected]
 
 
+def _hour_distance(a: int, b: int) -> int:
+    """Circular distance between two hours (0-23), wrapping around midnight."""
+    return min(abs(a - b), 24 - abs(a - b))
+
+
 # ── CSV Parsing ──────────────────────────────────────────────
 
 
 def parse_csv(csv_path: str | Path) -> list[dict]:
-    """Parse the Threads CSV export file."""
+    """Parse the Threads CSV export file.
+
+    Handles UTF-8, UTF-8 BOM, and Shift-JIS (Japanese Windows exports).
+    """
     path = Path(csv_path)
-    rows = []
-    with path.open(encoding="utf-8") as f:
+    # Try UTF-8 BOM first (handles both BOM and plain UTF-8)
+    for encoding in ("utf-8-sig", "cp932"):
+        try:
+            with path.open(encoding=encoding) as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+            return rows
+        except UnicodeDecodeError:
+            continue
+    # Final fallback with error replacement
+    with path.open(encoding="utf-8", errors="replace") as f:
         reader = csv.DictReader(f)
-        for row in reader:
-            rows.append(row)
-    return rows
+        return list(reader)
 
 
 # ── Hook Pattern Detection ───────────────────────────────────
@@ -371,7 +386,7 @@ def analyze_optimal_times(csv_path: str | Path) -> CSVAnalysisResult:
 
 def _safe_int(val: str) -> int:
     try:
-        return int(val.strip().replace(",", ""))
+        return int(val.strip().strip('"').replace(",", ""))
     except (ValueError, AttributeError):
         return 0
 
