@@ -93,6 +93,7 @@ def schedule(
     at: str = typer.Option(help="Publish time (YYYY-MM-DD HH:MM)"),
     add_cta: bool = typer.Option(False, "--cta", help="Append engagement CTA"),
     first_comment: str = typer.Option("", "--comment", help="First comment for engagement velocity"),
+    post_type: str = typer.Option("reach", "--type", help="Post type: reach (バズ) or list (リスト獲得)"),
 ):
     """Schedule a single Threads post via Metricool."""
     from .content_guard import append_cta, check_ng
@@ -122,9 +123,10 @@ def schedule(
         result = client.schedule_post(draft, publish_at)
 
     # Record in history for performance tracking
-    PostHistory().record_scheduled(text=text, publish_at=publish_at, metricool_response=result)
+    PostHistory().record_scheduled(text=text, publish_at=publish_at, metricool_response=result, post_type=post_type)
 
-    console.print(f"[green]Scheduled![/green]  at {publish_at}")
+    type_label = "reach" if post_type == "reach" else "list"
+    console.print(f"[green]Scheduled![/green]  at {publish_at} [{type_label}]")
     console.print(f"  Response: {result}")
 
 
@@ -707,21 +709,28 @@ def collect(
 @app.command()
 def review(
     days: int = typer.Option(30, help="Number of days to look back"),
-    sort_by: str = typer.Option("date", help="Sort by: date, views, likes, engagement"),
+    sort_by: str = typer.Option("date", help="Sort by: date, views, likes, replies, engagement"),
+    post_type: str = typer.Option(None, "--type", help="Filter by type: reach or list"),
 ):
-    """Review post performance with views and engagement.
+    """Review post performance with type-based KPIs.
 
-    Shows all tracked posts with their performance metrics.
+    Shows all tracked posts with performance metrics.
+    reach posts are evaluated by views/saves, list posts by replies/DMs.
     Use 'snshack collect' first to fetch latest metrics.
 
     Example:
-      snshack review                # last 30 days, sorted by date
-      snshack review --sort-by views  # sort by views
+      snshack review                    # all posts, last 30 days
+      snshack review --type reach       # only reach (バズ) posts
+      snshack review --type list        # only list (リスト獲得) posts
+      snshack review --sort-by replies  # sort by replies (list KPI)
     """
     from .post_history import PostHistory
 
     history = PostHistory()
-    records = history.get_recent(days=days)
+    if post_type:
+        records = history.get_by_type(post_type, days=days)
+    else:
+        records = history.get_recent(days=days)
 
     if not records:
         console.print("[yellow]No posts found.[/yellow]")
@@ -730,27 +739,34 @@ def review(
         return
 
     # Sort
-    if sort_by == "views":
-        records.sort(key=lambda r: r.views, reverse=True)
-    elif sort_by == "likes":
-        records.sort(key=lambda r: r.likes, reverse=True)
-    elif sort_by == "engagement":
-        records.sort(key=lambda r: r.engagement, reverse=True)
-    else:
-        records.sort(key=lambda r: r.scheduled_at, reverse=True)
+    sort_keys = {
+        "views": lambda r: r.views,
+        "likes": lambda r: r.likes,
+        "replies": lambda r: r.replies,
+        "engagement": lambda r: r.engagement,
+    }
+    records.sort(
+        key=sort_keys.get(sort_by, lambda r: r.scheduled_at),
+        reverse=True,
+    )
 
-    table = Table(title=f"Post Performance (last {days} days)")
+    type_label = f" [{post_type}]" if post_type else ""
+    table = Table(title=f"Post Performance (last {days} days){type_label}")
     table.add_column("Date", style="dim")
-    table.add_column("Text", max_width=40)
+    table.add_column("Type", justify="center")
+    table.add_column("Chars", justify="right")
+    table.add_column("Text", max_width=35)
     table.add_column("Views", justify="right")
     table.add_column("Likes", justify="right")
     table.add_column("Replies", justify="right")
     table.add_column("Eng.%", justify="right")
-    table.add_column("Status", justify="center")
 
     total_views = 0
     total_likes = 0
+    total_replies = 0
     collected_count = 0
+    reach_collected: list = []
+    list_collected: list = []
 
     for r in records:
         try:
@@ -759,34 +775,55 @@ def review(
         except ValueError:
             date_str = "-"
 
-        status_style = "green" if r.has_metrics else "yellow"
-        status_text = "collected" if r.has_metrics else "pending"
-
+        type_icon = "[cyan]R[/cyan]" if r.post_type == "reach" else "[magenta]L[/magenta]"
         eng_str = f"{r.engagement * 100:.1f}%" if r.engagement else "-"
 
         table.add_row(
             date_str,
-            r.text[:40],
+            type_icon,
+            str(r.char_count),
+            r.text[:35],
             f"{r.views:,}" if r.has_metrics else "-",
             f"{r.likes:,}" if r.has_metrics else "-",
             f"{r.replies:,}" if r.has_metrics else "-",
             eng_str,
-            f"[{status_style}]{status_text}[/{status_style}]",
         )
 
         if r.has_metrics:
             total_views += r.views
             total_likes += r.likes
+            total_replies += r.replies
             collected_count += 1
+            if r.post_type == "reach":
+                reach_collected.append(r)
+            else:
+                list_collected.append(r)
 
     console.print(table)
 
-    # Summary
+    # Type-based KPI summary
     if collected_count > 0:
         console.print()
         console.print(f"[bold]Summary:[/bold] {collected_count}/{len(records)} posts collected")
         console.print(f"  Total views: {total_views:,} | Avg: {total_views // collected_count:,}/post")
-        console.print(f"  Total likes: {total_likes:,} | Avg: {total_likes / collected_count:.1f}/post")
+
+        if reach_collected:
+            r_views = sum(r.views for r in reach_collected)
+            r_avg = r_views // len(reach_collected)
+            console.print(
+                f"  [cyan]Reach ({len(reach_collected)} posts):[/cyan] "
+                f"avg {r_avg:,} views/post — "
+                f"KPI: views (目標: 6,000+/post)"
+            )
+
+        if list_collected:
+            l_replies = sum(r.replies for r in list_collected)
+            l_avg = l_replies / len(list_collected)
+            console.print(
+                f"  [magenta]List ({len(list_collected)} posts):[/magenta] "
+                f"avg {l_avg:.1f} replies/post — "
+                f"KPI: replies/DM (目標: 5+/post)"
+            )
 
     uncollected = len(records) - collected_count
     if uncollected > 0:
@@ -915,6 +952,391 @@ def analytics(
             )
 
         console.print(table)
+
+
+# ── early velocity tracking ──────────────────────────────────
+
+
+@app.command()
+def collect_early(
+    max_age: int = typer.Option(6, help="Max hours since scheduled (default 6)"),
+):
+    """Collect early velocity metrics (1-6h after posting).
+
+    Captures snapshots of views/likes/replies shortly after posting.
+    Run 1h and 3h after posting to track initial velocity.
+
+    Example:
+      snshack collect-early
+    """
+    from .post_history import PostHistory, collect_performance
+
+    history = PostHistory()
+    if history.count == 0:
+        console.print("[yellow]No posts in history yet.[/yellow]")
+        return
+
+    eligible = history.get_early_collection(max_age_hours=max_age)
+    if not eligible:
+        console.print("[green]No posts eligible for early collection (1-6h old).[/green]")
+        return
+
+    console.print(f"Collecting early metrics for {len(eligible)} posts...")
+
+    with _get_client() as client:
+        collect_performance(history, client, min_age_hours=1)
+
+    snapshots_added = 0
+    for record in eligible:
+        if record.views > 0 or record.likes > 0:
+            history.add_snapshot(record, views=record.views, likes=record.likes, replies=record.replies)
+            snapshots_added += 1
+
+    if snapshots_added > 0:
+        console.print(f"[green]Added {snapshots_added} velocity snapshots:[/green]")
+        for r in eligible:
+            if r.snapshots:
+                s = r.snapshots[-1]
+                console.print(f"  {s.elapsed_hours}h: {s.views:,} views, {s.likes} likes | {r.text[:40]}...")
+    else:
+        console.print("[yellow]No metrics available yet.[/yellow] Posts may be too new.")
+
+
+@app.command()
+def velocity(
+    days: int = typer.Option(30, help="Number of days to look back"),
+):
+    """Show early velocity data for tracked posts.
+
+    Displays 1h/3h/final metrics to identify which posts
+    gained traction fastest.
+    """
+    from .post_history import PostHistory
+
+    history = PostHistory()
+    records = [r for r in history.get_recent(days=days) if r.snapshots and r.has_metrics]
+
+    if not records:
+        console.print("[yellow]No posts with velocity data.[/yellow]")
+        console.print("Run 'snshack collect-early' 1-3h after posting.")
+        return
+
+    table = Table(title="Post Velocity (early -> final)")
+    table.add_column("Text", max_width=30)
+    table.add_column("Type", justify="center")
+    table.add_column("Chars", justify="right")
+    table.add_column("1h Views", justify="right")
+    table.add_column("3h Views", justify="right")
+    table.add_column("Final", justify="right")
+    table.add_column("Speed", justify="center")
+
+    for r in sorted(records, key=lambda x: x.views, reverse=True):
+        snap_1h = next((s for s in r.snapshots if s.elapsed_hours <= 1), None)
+        snap_3h = next((s for s in r.snapshots if 2 <= s.elapsed_hours <= 4), None)
+        v1 = f"{snap_1h.views:,}" if snap_1h else "-"
+        v3 = f"{snap_3h.views:,}" if snap_3h else "-"
+        type_icon = "[cyan]R[/cyan]" if r.post_type == "reach" else "[magenta]L[/magenta]"
+
+        if snap_1h and r.views > 0:
+            ratio = snap_1h.views / r.views
+            speed = "[green]fast[/green]" if ratio > 0.3 else ("[yellow]mid[/yellow]" if ratio > 0.15 else "[red]slow[/red]")
+        else:
+            speed = "-"
+
+        table.add_row(r.text[:30], type_icon, str(r.char_count), v1, v3, f"{r.views:,}", speed)
+
+    console.print(table)
+
+
+# ── follower tracking ────────────────────────────────────────
+
+
+@app.command()
+def track_followers():
+    """Record today's follower count with post attribution.
+
+    Run daily to build follower growth data for correlation analysis.
+    """
+    from .csv_analyzer import _detect_hooks
+    from .follower_tracker import FollowerTracker
+    from .post_history import PostHistory
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    with _get_client() as client:
+        account = client.get_threads_account_metrics(yesterday, today)
+
+    history = PostHistory()
+    today_posts = [r for r in history.get_all() if r.has_metrics and r.scheduled_at.startswith(today)]
+    top_text, top_views, top_hooks = "", 0, []
+    if today_posts:
+        best = max(today_posts, key=lambda r: r.views)
+        top_text, top_views = best.text[:80], best.views
+        top_hooks = _detect_hooks(best.text)
+
+    tracker = FollowerTracker()
+    snapshot = tracker.record_snapshot(
+        date=today, followers_count=account.followers_count, delta=account.delta_followers,
+        top_post_text=top_text, top_post_views=top_views, top_post_hooks=top_hooks,
+    )
+
+    delta_str = f"+{snapshot.delta}" if snapshot.delta >= 0 else str(snapshot.delta)
+    console.print(f"[bold]Followers:[/bold] {snapshot.followers_count:,} ({delta_str})")
+    if top_text:
+        console.print(f"  Top post: {top_views:,} views | {top_text[:50]}...")
+    console.print(f"[green]Recorded for {today}[/green]")
+
+
+@app.command()
+def follower_report(
+    days: int = typer.Option(30, help="Number of days to look back"),
+    threshold: int = typer.Option(3000, help="Views threshold for correlation"),
+):
+    """Show follower growth report with post attribution."""
+    from .follower_tracker import FollowerTracker
+
+    tracker = FollowerTracker()
+    snapshots = tracker.get_recent(days=days)
+
+    if not snapshots:
+        console.print("[yellow]No follower data.[/yellow] Run 'snshack track-followers' daily.")
+        return
+
+    table = Table(title=f"Follower Growth (last {days} days)")
+    table.add_column("Date", style="dim")
+    table.add_column("Followers", justify="right")
+    table.add_column("Delta", justify="right")
+    table.add_column("Top Views", justify="right")
+    table.add_column("Hook")
+    table.add_column("Text", max_width=30)
+
+    for s in snapshots:
+        delta_style = "green" if s.delta > 0 else ("red" if s.delta < 0 else "dim")
+        delta_str = f"+{s.delta}" if s.delta >= 0 else str(s.delta)
+        hooks = ", ".join(s.top_post_hooks) if s.top_post_hooks else "-"
+        table.add_row(
+            s.date, f"{s.followers_count:,}",
+            f"[{delta_style}]{delta_str}[/{delta_style}]",
+            f"{s.top_post_views:,}" if s.top_post_views else "-",
+            hooks, s.top_post_text[:30] if s.top_post_text else "-",
+        )
+
+    console.print(table)
+
+    correlation = tracker.analyze_correlation(views_threshold=threshold)
+    if correlation:
+        console.print()
+        console.print(f"[bold]Views <-> Follower Correlation (threshold: {threshold:,})[/bold]")
+        console.print(f"  >= {threshold:,} views: avg +{correlation.avg_delta_above:.1f}/day ({correlation.days_above} days)")
+        console.print(f"  <  {threshold:,} views: avg +{correlation.avg_delta_below:.1f}/day ({correlation.days_below} days)")
+        if correlation.lift > 1:
+            console.print(f"  [green]Viral posts drive {correlation.lift:.1f}x more followers[/green]")
+
+
+# ── profile audit ────────────────────────────────────────────
+
+
+@app.command()
+def audit_profile():
+    """Audit your Threads profile for list acquisition optimization."""
+    from .post_history import PostHistory
+    from .profile_audit import audit_profile as _audit
+    from .threads_api import ThreadsAPIError, ThreadsGraphClient
+
+    try:
+        with ThreadsGraphClient() as client:
+            profile = client.get_user_profile("me")
+    except ThreadsAPIError as e:
+        console.print(f"[red]Failed to fetch profile:[/red] {e}")
+        raise typer.Exit(1)
+
+    result = _audit(profile, history=PostHistory())
+
+    console.print(f"[bold]Profile Audit: {result.score}/100[/bold]")
+    console.print()
+    for check in result.checks:
+        icon = "[green]o[/green]" if check.passed else "[red]x[/red]"
+        console.print(f"  {icon} {check.name}: {check.detail}")
+        if not check.passed and check.recommendation:
+            console.print(f"    [dim]-> {check.recommendation}[/dim]")
+
+
+# ── templates ────────────────────────────────────────────────
+
+
+@app.command()
+def templates(
+    top: int = typer.Option(5, help="Number of templates to show"),
+):
+    """Show winning content templates derived from your data."""
+    from .post_history import PostHistory
+    from .templates import generate_templates
+
+    tmpls = generate_templates(PostHistory(), top_examples=3)
+
+    if not tmpls:
+        console.print("[yellow]Not enough data.[/yellow] Run 'snshack collect' first.")
+        return
+
+    length_labels = {"short": "<100字", "medium": "100-300字", "long": "300字+"}
+    console.print(f"[bold]Winning Content Templates[/bold] ({len(tmpls)} hook types)")
+    console.print()
+    for i, t in enumerate(tmpls[:top], 1):
+        console.print(
+            f"  [bold]{i}. {t.hook_type}[/bold] "
+            f"({t.post_count} posts, avg {t.avg_views:,.0f} views, "
+            f"best: {length_labels.get(t.best_length_bucket, t.best_length_bucket)})"
+        )
+        console.print(f"    [dim]{t.structure_hint}[/dim]")
+        if t.example_posts:
+            console.print(f"    [dim]Ex: {t.example_posts[0][:60]}...[/dim]")
+        console.print()
+
+
+@app.command()
+def draft(
+    hook: str = typer.Argument(help="Hook type (数字訴求, 疑問形, 危機感, etc.)"),
+    topic: str = typer.Argument(help="Topic for the post"),
+):
+    """Generate a draft outline using a winning template.
+
+    Example:
+      snshack draft 数字訴求 "2026年の補助金"
+    """
+    from .templates import generate_draft_outline
+
+    outline = generate_draft_outline(hook, topic)
+    console.print(f"[bold]Draft: {hook} x {topic}[/bold]")
+    console.print()
+    console.print(outline)
+    console.print()
+    console.print(f"[dim]{len(outline)} chars[/dim]")
+
+
+# ── A/B testing ──────────────────────────────────────────────
+
+
+@app.command()
+def ab_create(
+    theme: str = typer.Option(..., help="Test theme"),
+    a: str = typer.Option(..., help="Variant A text"),
+    b: str = typer.Option(..., help="Variant B text"),
+    at_a: str = typer.Option("", "--at-a", help="Schedule A (YYYY-MM-DD HH:MM)"),
+    at_b: str = typer.Option("", "--at-b", help="Schedule B (YYYY-MM-DD HH:MM)"),
+):
+    """Create an A/B test with two post variants.
+
+    Example:
+      snshack ab-create --theme "補助金" \\
+        --a "知らないと損する補助金3選" \\
+        --b "補助金申請したい人いますか？" \\
+        --at-a "2026-03-10 09:00" --at-b "2026-03-17 09:00"
+    """
+    from .ab_test import ABTestManager
+    from .content_guard import check_ng
+    from .csv_analyzer import _detect_hooks
+    from .models import PostDraft
+    from .post_history import PostHistory
+
+    for label, text in [("A", a), ("B", b)]:
+        violations = check_ng(text)
+        if violations:
+            console.print(f"[red]Variant {label} NG:[/red] {', '.join(violations)}")
+            raise typer.Exit(1)
+
+    manager = ABTestManager()
+    scheduled_a, scheduled_b = "", ""
+
+    if at_a and at_b:
+        try:
+            pub_a = datetime.strptime(at_a, "%Y-%m-%d %H:%M")
+            pub_b = datetime.strptime(at_b, "%Y-%m-%d %H:%M")
+        except ValueError:
+            console.print("[red]Invalid datetime.[/red] Use YYYY-MM-DD HH:MM")
+            raise typer.Exit(1)
+
+        with _get_client() as client:
+            client.schedule_post(PostDraft(text=a), pub_a)
+            client.schedule_post(PostDraft(text=b), pub_b)
+
+        history = PostHistory()
+        history.record_scheduled(text=a, publish_at=pub_a, post_type="reach")
+        history.record_scheduled(text=b, publish_at=pub_b, post_type="reach")
+        scheduled_a, scheduled_b = pub_a.isoformat(), pub_b.isoformat()
+
+    test = manager.create_test(
+        theme=theme, variant_a_text=a, variant_b_text=b,
+        variant_a_scheduled_at=scheduled_a, variant_b_scheduled_at=scheduled_b,
+    )
+
+    console.print(f"[green]A/B Test created![/green]  ID: {test.test_id}")
+    console.print(f"  A ({', '.join(_detect_hooks(a)) or '-'}): {a[:50]}")
+    console.print(f"  B ({', '.join(_detect_hooks(b)) or '-'}): {b[:50]}")
+
+
+@app.command()
+def ab_result(
+    test_id: str = typer.Argument(default=None, help="Test ID (omit for all)"),
+):
+    """Show A/B test results. Run 'snshack collect' first."""
+    from .ab_test import ABTestManager, determine_winner
+    from .csv_analyzer import _detect_hooks
+    from .post_history import PostHistory
+
+    manager = ABTestManager()
+    if manager.count == 0:
+        console.print("[yellow]No A/B tests.[/yellow] Create one with 'snshack ab-create'")
+        return
+
+    tests = [manager.get_test(test_id)] if test_id else manager.get_all()
+    tests = [t for t in tests if t is not None]
+
+    if not tests:
+        console.print(f"[red]Test '{test_id}' not found.[/red]")
+        return
+
+    history = PostHistory()
+    all_records = history.get_all()
+
+    for test in tests:
+        if test.status != "completed":
+            for record in all_records:
+                if record.has_metrics and record.text.strip() == test.variant_a_text.strip():
+                    test.a_views, test.a_likes, test.a_replies = record.views, record.likes, record.replies
+                    test.a_engagement = record.engagement
+                elif record.has_metrics and record.text.strip() == test.variant_b_text.strip():
+                    test.b_views, test.b_likes, test.b_replies = record.views, record.likes, record.replies
+                    test.b_engagement = record.engagement
+            if test.a_views > 0 or test.b_views > 0:
+                determine_winner(test)
+                manager._save()
+
+        console.print()
+        console.print(f"[bold]{test.test_id}[/bold] ({test.theme}) [{test.status}]")
+
+        table = Table()
+        table.add_column("", justify="center")
+        table.add_column("Text", max_width=35)
+        table.add_column("Chars", justify="right")
+        table.add_column("Hook")
+        table.add_column("Views", justify="right")
+        table.add_column("Replies", justify="right")
+
+        for label, text, views, replies in [
+            ("A", test.variant_a_text, test.a_views, test.a_replies),
+            ("B", test.variant_b_text, test.b_views, test.b_replies),
+        ]:
+            style = "bold green" if test.winner == label else ""
+            hooks = ", ".join(_detect_hooks(text)) or "-"
+            table.add_row(label, text[:35], str(len(text)), hooks, f"{views:,}", f"{replies:,}", style=style)
+
+        console.print(table)
+
+        if test.winner == "draw":
+            console.print("  [yellow]Draw[/yellow]")
+        elif test.winner:
+            console.print(f"  [green]Winner: {test.winner}[/green] ({test.confidence})")
 
 
 if __name__ == "__main__":

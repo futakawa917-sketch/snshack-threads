@@ -56,6 +56,7 @@ class PostRecord:
     scheduled_at: str  # ISO format datetime when post is scheduled to publish
     created_at: str = ""  # When the schedule was created
     status: str = "scheduled"  # scheduled | published | collected
+    post_type: str = "reach"  # reach | list — reach=バズ狙い, list=リスト獲得狙い
 
     # Performance metrics (filled by collect_performance)
     views: int = 0
@@ -161,12 +162,14 @@ class PostHistory:
         text: str,
         publish_at: datetime,
         metricool_response: dict | None = None,
+        post_type: str = "reach",
     ) -> PostRecord:
         """Record a newly scheduled post."""
         record = PostRecord(
             text=text,
             scheduled_at=publish_at.isoformat(),
             created_at=datetime.now().isoformat(),
+            post_type=post_type,
             metricool_response=metricool_response or {},
         )
         self._records.append(record)
@@ -259,6 +262,15 @@ class PostHistory:
         return [
             r for r in self._records
             if datetime.fromisoformat(r.scheduled_at) > cutoff
+        ]
+
+    def get_by_type(self, post_type: str, days: int = 30) -> list[PostRecord]:
+        """Return posts of a specific type from the last N days."""
+        cutoff = datetime.now() - timedelta(days=days)
+        return [
+            r for r in self._records
+            if r.post_type == post_type
+            and datetime.fromisoformat(r.scheduled_at) > cutoff
         ]
 
     def get_uncollected(self) -> list[PostRecord]:
