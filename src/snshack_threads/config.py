@@ -38,6 +38,9 @@ class Settings(BaseModel):
     threads_access_token: str = ""
     research_keywords: str = ""
 
+    # Anthropic API
+    anthropic_api_key: str = ""
+
     # Hook patterns (業種別カスタマイズ用)
     custom_hooks: dict[str, str] = Field(default_factory=dict)
 

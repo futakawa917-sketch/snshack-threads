@@ -34,6 +34,14 @@ def _get_claude_client():
 
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
     if not api_key:
+        # Try loading from profile config
+        try:
+            from .config import get_settings
+            settings = get_settings()
+            api_key = getattr(settings, "anthropic_api_key", "")
+        except Exception:
+            pass
+    if not api_key:
         raise ValueError(
             "ANTHROPIC_API_KEY not set. Get one from https://console.anthropic.com/"
         )

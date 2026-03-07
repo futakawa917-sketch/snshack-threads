@@ -207,9 +207,14 @@ def generate_daily_plan(
 
     # Fresh posts
     n_fresh = posts_per_day - n_recycle
+    # Bootstrap phase: 50% short punchy posts (1-2 lines) for virality
+    n_short = n_fresh // 2 if phase == "bootstrap" else 0
+    short_indices = set(random.sample(range(n_fresh), n_short)) if n_short > 0 else set()
+
     for i in range(n_fresh):
         hook = hooks[i] if i < len(hooks) else random.choice(all_hook_names)
         topic = topics[i % len(topics)] if topics else settings.get_research_keywords()[0] if settings.get_research_keywords() else "today's topic"
+        is_short = i in short_indices
 
         try:
             # Use template if available in optimized phase
@@ -221,6 +226,11 @@ def generate_daily_plan(
                     hook_type=hook,
                     example_posts=tmpl.example_posts,
                     best_length=tmpl.best_length_bucket,
+                )
+            elif is_short:
+                post = generate_post(
+                    topic=topic, hook_type=hook, max_length=80,
+                    additional_instructions="1〜2行で端的に書いてください。短くインパクトのある投稿にしてください。余計な説明は不要です。",
                 )
             else:
                 post = generate_post(topic=topic, hook_type=hook)
@@ -323,8 +333,20 @@ def execute_plan(
             continue
 
         slot = slots[i]
+        # Add random jitter (±15min) to avoid posting at exactly the same time daily
+        jitter_minutes = random.randint(-15, 15)
+        base_minute = slot.minute + jitter_minutes
+        hour_adj = slot.hour
+        if base_minute < 0:
+            base_minute += 60
+            hour_adj -= 1
+        elif base_minute >= 60:
+            base_minute -= 60
+            hour_adj += 1
+        hour_adj = max(0, min(23, hour_adj))
+
         publish_at = target_date.replace(
-            hour=slot.hour, minute=slot.minute, second=0, microsecond=0
+            hour=hour_adj, minute=base_minute, second=0, microsecond=0
         )
 
         text = post_data["text"]
