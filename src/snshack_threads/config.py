@@ -23,6 +23,7 @@ class Settings(BaseModel):
     api_base: str = METRICOOL_API_BASE
     data_dir: Path = Field(default_factory=lambda: Path.home() / ".snshack-threads")
     posts_per_day: int = Field(default=5)
+    csv_path: str = Field(default_factory=lambda: os.getenv("THREADS_CSV_PATH", ""))
 
     def validate_credentials(self) -> bool:
         """Check that required credentials are set."""

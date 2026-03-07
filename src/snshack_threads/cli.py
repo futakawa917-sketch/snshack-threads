@@ -217,10 +217,14 @@ def best_times(
 ):
     """Analyze CSV data and show optimal posting times by hour."""
     from .csv_analyzer import analyze_optimal_times
-    from .scheduler import _DEFAULT_CSV
+    from .scheduler import _resolve_csv_path
 
-    csv_path = csv_file or str(_DEFAULT_CSV)
-    result = analyze_optimal_times(csv_path)
+    resolved = _resolve_csv_path(csv_file)
+    if resolved is None:
+        console.print("[red]CSV file not found.[/red] Set THREADS_CSV_PATH or use --csv.")
+        raise typer.Exit(1)
+
+    result = analyze_optimal_times(resolved)
 
     if result.total_posts == 0:
         console.print("[red]No data found in CSV.[/red]")

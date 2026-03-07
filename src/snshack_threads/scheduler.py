@@ -15,20 +15,39 @@ from .config import Settings, get_settings
 from .csv_analyzer import analyze_optimal_times
 from .models import DailySchedule, PostDraft, ScheduleSlot
 
-# Default CSV location (repo root)
-_DEFAULT_CSV = Path(__file__).resolve().parent.parent.parent / "スレッズ.csv"
+# Fallback CSV location (repo root) when THREADS_CSV_PATH is not set
+_REPO_ROOT_CSV = Path(__file__).resolve().parent.parent.parent / "スレッズ.csv"
+
+
+def _resolve_csv_path(csv_path: str | Path | None = None) -> Path | None:
+    """Resolve CSV path from argument > env var > repo root fallback."""
+    if csv_path:
+        p = Path(csv_path)
+        return p if p.exists() else None
+
+    settings = get_settings()
+    if settings.csv_path:
+        p = Path(settings.csv_path)
+        if not p.is_absolute():
+            p = _REPO_ROOT_CSV.parent / p
+        return p if p.exists() else None
+
+    return _REPO_ROOT_CSV if _REPO_ROOT_CSV.exists() else None
 
 
 def get_optimal_schedule(csv_path: str | Path | None = None, n_slots: int = 5) -> DailySchedule:
-    """Build a DailySchedule from CSV analytics data.
+    """Build a DailySchedule by analyzing the account's CSV data.
 
-    Falls back to default fixed slots if CSV is unavailable.
+    Time slots are always derived from the data — never hardcoded.
+    Different accounts/genres will produce different optimal schedules.
+
+    Falls back to default fixed slots only if no CSV is available.
     """
-    path = Path(csv_path) if csv_path else _DEFAULT_CSV
-    if not path.exists():
+    resolved = _resolve_csv_path(csv_path)
+    if resolved is None:
         return DailySchedule()
 
-    result = analyze_optimal_times(path)
+    result = analyze_optimal_times(resolved)
     optimal = result.get_optimal_slots(n=n_slots)
 
     if not optimal:
