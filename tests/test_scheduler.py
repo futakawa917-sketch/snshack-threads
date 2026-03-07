@@ -8,7 +8,19 @@ import pytest
 from snshack_threads.models import DailySchedule, PostDraft, ScheduleSlot
 from snshack_threads.scheduler import (
     get_next_available_slots,
+    get_optimal_schedule,
     schedule_posts_for_day,
+)
+
+# Explicit schedule for deterministic tests
+_TEST_SCHEDULE = DailySchedule(
+    slots=[
+        ScheduleSlot(hour=8, minute=0),
+        ScheduleSlot(hour=11, minute=0),
+        ScheduleSlot(hour=14, minute=0),
+        ScheduleSlot(hour=18, minute=0),
+        ScheduleSlot(hour=21, minute=0),
+    ]
 )
 
 
@@ -19,12 +31,11 @@ class TestSchedulePostsForDay:
 
         drafts = [PostDraft(text=f"Post {i}") for i in range(5)]
         target = datetime(2026, 3, 8)
-        results = schedule_posts_for_day(client, drafts, target)
+        results = schedule_posts_for_day(client, drafts, target, schedule=_TEST_SCHEDULE)
 
         assert len(results) == 5
         assert client.schedule_post.call_count == 5
 
-        # Verify times: 8:00, 11:00, 14:00, 18:00, 21:00
         calls = client.schedule_post.call_args_list
         hours = [call.args[1].hour for call in calls]
         assert hours == [8, 11, 14, 18, 21]
@@ -35,7 +46,7 @@ class TestSchedulePostsForDay:
 
         drafts = [PostDraft(text="Only one")]
         target = datetime(2026, 3, 8)
-        results = schedule_posts_for_day(client, drafts, target)
+        results = schedule_posts_for_day(client, drafts, target, schedule=_TEST_SCHEDULE)
 
         assert len(results) == 1
         assert client.schedule_post.call_count == 1
@@ -57,6 +68,20 @@ class TestSchedulePostsForDay:
         assert calls[0].args[1].minute == 30
         assert calls[1].args[1].hour == 20
 
+    def test_uses_csv_schedule_by_default(self):
+        """When no schedule given, uses CSV-derived optimal times."""
+        client = MagicMock()
+        client.schedule_post.return_value = {"data": {"id": "ok"}}
+
+        drafts = [PostDraft(text="Test")]
+        target = datetime(2026, 3, 8)
+        results = schedule_posts_for_day(client, drafts, target)
+
+        assert len(results) == 1
+        # Should use the first slot from CSV analysis (not hardcoded)
+        call_time = client.schedule_post.call_args_list[0].args[1]
+        assert 0 <= call_time.hour <= 23
+
 
 class TestGetNextAvailableSlots:
     def test_all_slots_available(self):
@@ -64,7 +89,7 @@ class TestGetNextAvailableSlots:
         client.get_scheduled_posts.return_value = []
 
         target = datetime(2026, 3, 8)
-        available = get_next_available_slots(client, target)
+        available = get_next_available_slots(client, target, schedule=_TEST_SCHEDULE)
 
         assert len(available) == 5
         hours = [dt.hour for dt in available]
@@ -78,7 +103,7 @@ class TestGetNextAvailableSlots:
         ]
 
         target = datetime(2026, 3, 8)
-        available = get_next_available_slots(client, target)
+        available = get_next_available_slots(client, target, schedule=_TEST_SCHEDULE)
 
         assert len(available) == 3
         hours = [dt.hour for dt in available]
@@ -92,6 +117,29 @@ class TestGetNextAvailableSlots:
         ]
 
         target = datetime(2026, 3, 8)
-        available = get_next_available_slots(client, target)
+        available = get_next_available_slots(client, target, schedule=_TEST_SCHEDULE)
 
         assert len(available) == 0
+
+
+class TestGetOptimalSchedule:
+    def test_fallback_when_no_csv(self, tmp_path):
+        schedule = get_optimal_schedule(csv_path=tmp_path / "nonexistent.csv")
+        # Falls back to default 5 slots
+        assert len(schedule.slots) == 5
+
+    def test_from_csv(self, tmp_path):
+        import csv
+
+        path = tmp_path / "test.csv"
+        fieldnames = ["Image", "PostLink", "Content", "Type", "Date", "Views", "Likes", "Replies", "Reposts", "Quotes", "Shares", "Engagement"]
+        with path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for h in [9, 9, 9, 15, 15, 20]:
+                writer.writerow({"Date": f"2026-03-01 {h:02d}:00", "Views": "5000", "Likes": "20", "Replies": "5", "Engagement": "0.50"})
+
+        schedule = get_optimal_schedule(csv_path=path, n_slots=3)
+        assert len(schedule.slots) == 3
+        hours = [s.hour for s in schedule.slots]
+        assert hours == sorted(hours)

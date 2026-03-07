@@ -109,7 +109,9 @@ def schedule_day(
     texts: list[str] = typer.Option([], "--text", "-t", help="Post texts (up to 5)"),
     file: str | None = typer.Option(None, "--file", "-f", help="File with one post text per line"),
 ):
-    """Schedule up to 5 posts for a day at optimal time slots (8, 11, 14, 18, 21).
+    """Schedule up to 5 posts for a day at data-driven optimal time slots.
+
+    Time slots are automatically determined by analyzing the CSV export data.
 
     Examples:
       snshack schedule-day 2026-03-08 -t "朝の投稿" -t "昼の投稿" -t "午後" -t "夕方" -t "夜"
@@ -142,11 +144,11 @@ def schedule_day(
         results = schedule_posts_for_day(client, drafts, target)
 
     console.print(f"[green]Scheduled {len(results)} posts for {date}![/green]")
-    from .models import DailySchedule
+    from .scheduler import get_optimal_schedule
 
-    slots = DailySchedule().slots
+    schedule = get_optimal_schedule()
     for i, _result in enumerate(results):
-        slot = slots[i]
+        slot = schedule.slots[i]
         console.print(f"  {slot.hour:02d}:{slot.minute:02d} - {all_texts[i][:60]}")
 
 
@@ -191,7 +193,7 @@ def slots(
         default=None, help="Target date (YYYY-MM-DD), defaults to today"
     ),
 ):
-    """Show available time slots for a day."""
+    """Show available time slots for a day (based on CSV analytics)."""
     from .scheduler import get_next_available_slots
 
     target = datetime.strptime(date, "%Y-%m-%d") if date else datetime.now()
@@ -203,9 +205,65 @@ def slots(
         console.print(f"No available slots for {target.strftime('%Y-%m-%d')}.")
         return
 
-    console.print(f"[bold]Available slots for {target.strftime('%Y-%m-%d')}:[/bold]")
+    console.print(f"[bold]Available slots for {target.strftime('%Y-%m-%d')} (data-driven):[/bold]")
     for dt in available:
         console.print(f"  {dt.strftime('%H:%M')}")
+
+
+@app.command()
+def best_times(
+    csv_file: str = typer.Option(None, "--csv", "-c", help="Path to CSV file (defaults to スレッズ.csv in repo root)"),
+    top: int = typer.Option(10, help="Number of top hours to show"),
+):
+    """Analyze CSV data and show optimal posting times by hour."""
+    from .csv_analyzer import analyze_optimal_times
+    from .scheduler import _DEFAULT_CSV
+
+    csv_path = csv_file or str(_DEFAULT_CSV)
+    result = analyze_optimal_times(csv_path)
+
+    if result.total_posts == 0:
+        console.print("[red]No data found in CSV.[/red]")
+        return
+
+    console.print(f"[bold]Optimal Posting Times[/bold] ({result.total_posts} posts analyzed)")
+    console.print()
+
+    table = Table(title="Hour-by-Hour Performance")
+    table.add_column("Hour", justify="center")
+    table.add_column("Posts", justify="right")
+    table.add_column("Avg Views", justify="right")
+    table.add_column("Avg Likes", justify="right")
+    table.add_column("Avg Eng.%", justify="right")
+    table.add_column("Score", justify="right")
+    table.add_column("Rank", justify="center")
+
+    # Sort by score descending
+    active = [hs for hs in result.hour_stats.values() if hs.post_count > 0]
+    active.sort(key=lambda h: h.score, reverse=True)
+
+    for rank, hs in enumerate(active[:top], 1):
+        style = "bold green" if rank <= 5 else ""
+        medal = {1: "1st", 2: "2nd", 3: "3rd"}.get(rank, f"{rank}th")
+        table.add_row(
+            f"{hs.hour:02d}:00",
+            str(hs.post_count),
+            f"{hs.avg_views:,.0f}",
+            f"{hs.avg_likes:,.1f}",
+            f"{hs.avg_engagement:.2f}%",
+            f"{hs.score:,.0f}",
+            medal,
+            style=style,
+        )
+
+    console.print(table)
+
+    # Show recommended schedule
+    optimal = result.get_optimal_slots(n=5)
+    console.print()
+    console.print("[bold]Recommended daily schedule (top 5 slots):[/bold]")
+    for h, m in optimal:
+        console.print(f"  {h:02d}:{m:02d}")
 
 
 # ── analytics ────────────────────────────────────────────────

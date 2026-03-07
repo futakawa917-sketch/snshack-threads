@@ -1,16 +1,42 @@
 """Post scheduling and automation via Metricool API.
 
 Supports batch scheduling of multiple posts per day (default: 5).
+Time slots are determined by CSV analytics data for optimal engagement.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from .api import MetricoolClient
 from .config import Settings, get_settings
+from .csv_analyzer import analyze_optimal_times
 from .models import DailySchedule, PostDraft, ScheduleSlot
+
+# Default CSV location (repo root)
+_DEFAULT_CSV = Path(__file__).resolve().parent.parent.parent / "スレッズ.csv"
+
+
+def get_optimal_schedule(csv_path: str | Path | None = None, n_slots: int = 5) -> DailySchedule:
+    """Build a DailySchedule from CSV analytics data.
+
+    Falls back to default fixed slots if CSV is unavailable.
+    """
+    path = Path(csv_path) if csv_path else _DEFAULT_CSV
+    if not path.exists():
+        return DailySchedule()
+
+    result = analyze_optimal_times(path)
+    optimal = result.get_optimal_slots(n=n_slots)
+
+    if not optimal:
+        return DailySchedule()
+
+    return DailySchedule(
+        slots=[ScheduleSlot(hour=h, minute=m) for h, m in optimal]
+    )
 
 
 def schedule_posts_for_day(
@@ -19,19 +45,19 @@ def schedule_posts_for_day(
     date: datetime,
     schedule: DailySchedule | None = None,
 ) -> list[dict[str, Any]]:
-    """Schedule multiple posts for a single day at predefined time slots.
+    """Schedule multiple posts for a single day at optimal time slots.
 
     Args:
         client: Metricool API client.
         drafts: List of post drafts (up to len(schedule.slots)).
         date: The target date.
-        schedule: Time slots for the day. Defaults to 5 slots (8, 11, 14, 18, 21).
+        schedule: Time slots. If None, uses CSV-derived optimal times.
 
     Returns:
         List of API responses for each scheduled post.
     """
     if schedule is None:
-        schedule = DailySchedule()
+        schedule = get_optimal_schedule()
 
     results: list[dict[str, Any]] = []
     for i, draft in enumerate(drafts):
@@ -84,7 +110,7 @@ def get_next_available_slots(
     Checks already-scheduled posts and returns slots that are still free.
     """
     if schedule is None:
-        schedule = DailySchedule()
+        schedule = get_optimal_schedule()
 
     date_str = date.strftime("%Y-%m-%d")
     existing = client.get_scheduled_posts(date_str, date_str)
