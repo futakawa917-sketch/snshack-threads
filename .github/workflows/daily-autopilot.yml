@@ -1,0 +1,50 @@
+name: Daily Autopilot
+
+on:
+  schedule:
+    # 毎朝7:00 JST (22:00 UTC前日) + GitHub Actionsの遅延で自然にランダム化
+    - cron: '0 22 * * *'
+  workflow_dispatch: # 手動実行も可能
+
+jobs:
+  autopilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: pip install -e .
+
+      - name: Setup profile
+        run: |
+          mkdir -p ~/.snshack-threads/profiles/default
+          cat > ~/.snshack-threads/profiles/default/config.json << 'CONF'
+          {
+            "threads_access_token": "${{ secrets.THREADS_ACCESS_TOKEN }}",
+            "threads_user_id": "${{ secrets.THREADS_USER_ID }}",
+            "threads_app_id": "${{ secrets.THREADS_APP_ID }}",
+            "threads_app_secret": "${{ secrets.THREADS_APP_SECRET }}",
+            "anthropic_api_key": "${{ secrets.ANTHROPIC_API_KEY }}",
+            "research_keywords": "補助金,助成金,資金調達"
+          }
+          CONF
+
+      - name: Run autopilot
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          snshack autopilot -t "補助金" -t "助成金" -t "資金調達" -t "創業支援" -t "事業再構築"
+
+      - name: Run auto-research (if available)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: snshack auto-research || echo "Auto-research skipped (Advanced Access not yet available)"
+
+      - name: Refresh token
+        run: snshack threads refresh-token || echo "Token refresh skipped"
