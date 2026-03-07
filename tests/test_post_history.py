@@ -31,8 +31,12 @@ class TestPostRecord:
         r = PostRecord(text="test", scheduled_at="2026-03-01T09:00:00")
         assert not r.has_metrics
 
-    def test_has_metrics_true_with_views(self):
-        r = PostRecord(text="test", scheduled_at="2026-03-01T09:00:00", views=100)
+    def test_has_metrics_true_when_collected(self):
+        r = PostRecord(text="test", scheduled_at="2026-03-01T09:00:00", status="collected")
+        assert r.has_metrics
+
+    def test_has_metrics_true_even_with_zero_views(self):
+        r = PostRecord(text="test", scheduled_at="2026-03-01T09:00:00", status="collected", views=0)
         assert r.has_metrics
 
     def test_roundtrip_dict(self):

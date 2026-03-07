@@ -96,6 +96,7 @@ def schedule(
     """Schedule a single Threads post via Metricool."""
     from .content_guard import append_cta, check_ng
     from .models import PostDraft
+    from .post_history import PostHistory
 
     # NG check
     violations = check_ng(text)
@@ -112,6 +113,9 @@ def schedule(
 
     with _get_client() as client:
         result = client.schedule_post(draft, publish_at)
+
+    # Record in history for performance tracking
+    PostHistory().record_scheduled(text=text, publish_at=publish_at, metricool_response=result)
 
     console.print(f"[green]Scheduled![/green]  at {publish_at}")
     console.print(f"  Response: {result}")

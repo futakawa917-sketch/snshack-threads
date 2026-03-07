@@ -5,8 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from .api import MetricoolClient
+import logging
+
+from .api import MetricoolAPIError, MetricoolClient
 from .models import ThreadsPost
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -70,8 +74,8 @@ def generate_report(
         account = client.get_threads_account_metrics(start, end)
         followers_count = account.followers_count
         delta_followers = account.delta_followers
-    except Exception:
-        pass
+    except MetricoolAPIError as e:
+        logger.warning("Failed to fetch account metrics: %s", e)
 
     return AnalyticsReport(
         period_start=start,

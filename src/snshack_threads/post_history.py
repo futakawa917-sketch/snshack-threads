@@ -46,7 +46,7 @@ class PostRecord:
 
     @property
     def has_metrics(self) -> bool:
-        return self.views > 0 or self.likes > 0
+        return self.status == "collected"
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -208,16 +208,25 @@ def collect_performance(
 
 
 def _match_post(record: PostRecord, api_posts: list) -> Any | None:
-    """Match a history record to an API post by text similarity.
+    """Match a history record to an API post by text comparison.
 
-    Uses first 50 chars of text for matching since Metricool may truncate.
+    Tries full text match first, then prefix match, then time-based fallback.
     """
-    record_text = record.text.strip()[:50]
+    record_text = record.text.strip()
 
+    # Exact full-text match
     for post in api_posts:
-        post_text = (post.text or "").strip()[:50]
+        post_text = (post.text or "").strip()
         if record_text and post_text and record_text == post_text:
             return post
+
+    # Prefix match (API may truncate text)
+    if len(record_text) > 20:
+        record_prefix = record_text[:80]
+        for post in api_posts:
+            post_text = (post.text or "").strip()
+            if post_text and post_text.startswith(record_prefix):
+                return post
 
     # Fuzzy fallback: match by scheduled time (within 1 hour)
     try:

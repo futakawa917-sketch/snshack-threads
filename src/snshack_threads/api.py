@@ -67,7 +67,12 @@ class MetricoolClient:
         resp = self._http.get(path, params=all_params)
         if resp.status_code >= 400:
             raise MetricoolAPIError(resp.text, status_code=resp.status_code)
-        return resp.json()
+        try:
+            return resp.json()
+        except (json.JSONDecodeError, ValueError):
+            raise MetricoolAPIError(
+                f"Invalid JSON response: {resp.text[:200]}", status_code=resp.status_code
+            )
 
     def _post(self, path: str, data: dict[str, Any] | None = None, params: dict[str, str] | None = None) -> dict[str, Any]:
         all_params = self._common_params()
@@ -76,7 +81,12 @@ class MetricoolClient:
         resp = self._http.post(path, params=all_params, content=json.dumps(data) if data else None)
         if resp.status_code >= 400:
             raise MetricoolAPIError(resp.text, status_code=resp.status_code)
-        return resp.json()
+        try:
+            return resp.json()
+        except (json.JSONDecodeError, ValueError):
+            raise MetricoolAPIError(
+                f"Invalid JSON response: {resp.text[:200]}", status_code=resp.status_code
+            )
 
     # ── brands ───────────────────────────────────────────────
 

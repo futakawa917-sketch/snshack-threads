@@ -12,12 +12,16 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .api import MetricoolClient
+import logging
+
+from .api import MetricoolClient, MetricoolAPIError
 from .config import Settings, get_settings
 from .content_guard import check_ng
 from .csv_analyzer import analyze_optimal_times
 from .models import DailySchedule, PostDraft, ScheduleSlot
 from .post_history import PostHistory
+
+logger = logging.getLogger(__name__)
 
 # Fallback CSV location (repo root) when THREADS_CSV_PATH is not set
 _REPO_ROOT_CSV = Path(__file__).resolve().parent.parent.parent / "スレッズ.csv"
@@ -115,6 +119,8 @@ def schedule_posts_for_day(
         history = PostHistory()
 
     results: list[dict[str, Any]] = []
+    errors: list[tuple[int, str]] = []
+
     for i, draft in enumerate(drafts):
         if i >= len(schedule.slots):
             break
@@ -122,7 +128,13 @@ def schedule_posts_for_day(
         publish_at = date.replace(
             hour=slot.hour, minute=slot.minute, second=0, microsecond=0
         )
-        result = client.schedule_post(draft, publish_at)
+        try:
+            result = client.schedule_post(draft, publish_at)
+        except (MetricoolAPIError, Exception) as e:
+            logger.warning("Failed to schedule post %d: %s", i + 1, e)
+            errors.append((i + 1, str(e)))
+            continue
+
         results.append(result)
 
         # Record in history for performance tracking
@@ -130,6 +142,12 @@ def schedule_posts_for_day(
             text=draft.text,
             publish_at=publish_at,
             metricool_response=result,
+        )
+
+    if errors and not results:
+        raise MetricoolAPIError(
+            f"All {len(errors)} posts failed to schedule. "
+            f"First error: {errors[0][1]}"
         )
 
     return results
@@ -140,16 +158,21 @@ def schedule_posts_for_week(
     daily_drafts: dict[str, list[PostDraft]],
     start_date: datetime,
     schedule: DailySchedule | None = None,
+    history: PostHistory | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Schedule posts for multiple days.
 
     Each day uses its own day-of-week optimal schedule unless overridden.
+    Shares a single PostHistory instance across all days.
     """
+    if history is None:
+        history = PostHistory()
+
     results: dict[str, list[dict[str, Any]]] = {}
 
     for date_str, drafts in daily_drafts.items():
         date = datetime.strptime(date_str, "%Y-%m-%d")
-        day_results = schedule_posts_for_day(client, drafts, date, schedule)
+        day_results = schedule_posts_for_day(client, drafts, date, schedule, history=history)
         results[date_str] = day_results
 
     return results

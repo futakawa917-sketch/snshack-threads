@@ -58,7 +58,13 @@ class ThreadsGraphClient:
         resp = self._http.get(path, params=all_params)
         if resp.status_code >= 400:
             raise ThreadsAPIError(resp.text, status_code=resp.status_code)
-        return resp.json()
+        try:
+            return resp.json()
+        except (ValueError, Exception):
+            raise ThreadsAPIError(
+                f"Invalid JSON response: {resp.text[:200]}",
+                status_code=resp.status_code,
+            )
 
     def keyword_search(
         self,
