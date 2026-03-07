@@ -2537,5 +2537,144 @@ def cron_logs(
                     break
 
 
+# ── Dashboard ──────────────────────────────────────────────
+
+@app.command("dashboard")
+def dashboard_cmd(
+    port: int = typer.Option(8501, "--port", help="Port number"),
+):
+    """Launch the Streamlit web dashboard."""
+    import subprocess
+    import sys
+
+    dashboard_module = Path(__file__).parent / "dashboard.py"
+    cmd = [sys.executable, "-m", "streamlit", "run", str(dashboard_module), "--server.port", str(port)]
+    console.print(f"[green]Starting dashboard on port {port}...[/green]")
+    console.print("[dim]Stop with Ctrl+C[/dim]")
+    try:
+        subprocess.run(cmd, check=True)
+    except FileNotFoundError:
+        console.print("[red]streamlit not found. Install: pip install 'snshack-threads[dashboard]'[/red]")
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Dashboard stopped.[/yellow]")
+
+
+# ── Token refresh ─────────────────────────────────────────
+
+@threads_app.command("refresh-token")
+def threads_refresh_token(
+    force: bool = typer.Option(False, "--force", help="Force refresh even if not expiring soon"),
+):
+    """Refresh Threads API long-lived token (60-day tokens)."""
+    from .threads_api import get_token_info, refresh_long_lived_token
+
+    settings = _get_settings()
+
+    # Show current token info
+    console.print("[bold]Current token status:[/bold]")
+    info = get_token_info(settings)
+    if info:
+        console.print(f"  App ID: {info.get('app_id', 'N/A')}")
+        expires = info.get("expires_at")
+        if expires:
+            exp_dt = datetime.fromtimestamp(expires)
+            days_left = (exp_dt - datetime.now()).days
+            color = "green" if days_left > 14 else "yellow" if days_left > 7 else "red"
+            console.print(f"  Expires: {exp_dt:%Y-%m-%d} ([{color}]{days_left} days left[/{color}])")
+
+            if days_left > 14 and not force:
+                console.print("[green]Token is still valid. Use --force to refresh anyway.[/green]")
+                return
+        else:
+            console.print("  [yellow]Could not determine expiry[/yellow]")
+    else:
+        console.print("  [yellow]Could not fetch token info[/yellow]")
+
+    # Refresh
+    console.print("\n[bold]Refreshing token...[/bold]")
+    new_token = refresh_long_lived_token(settings)
+    if new_token:
+        console.print("[green]Token refreshed successfully![/green]")
+        # Show new expiry
+        new_info = get_token_info(settings)
+        if new_info and new_info.get("expires_at"):
+            exp_dt = datetime.fromtimestamp(new_info["expires_at"])
+            days_left = (exp_dt - datetime.now()).days
+            console.print(f"  New expiry: {exp_dt:%Y-%m-%d} ({days_left} days)")
+    else:
+        console.print("[red]Token refresh failed. Check your token and settings.[/red]")
+
+
+# ── Notifications ─────────────────────────────────────────
+
+notify_app = typer.Typer(help="Notification management (Slack / Email)")
+app.add_typer(notify_app, name="notify")
+
+
+@notify_app.command("test")
+def notify_test(
+    message: str = typer.Option("Test notification from SNShack Threads", "--message", "-m"),
+):
+    """Send a test notification to all configured channels."""
+    from .notifier import NotifyConfig, send_email, send_slack
+
+    config = NotifyConfig.from_profile(_active_profile)
+
+    sent = False
+    if config.has_slack:
+        ok = send_slack(config, message, title="SNShack Test")
+        console.print(f"  Slack: {'[green]sent[/green]' if ok else '[red]failed[/red]'}")
+        sent = sent or ok
+    else:
+        console.print("  Slack: [dim]not configured[/dim]")
+
+    if config.has_email:
+        ok = send_email(config, subject="SNShack Test", body=message)
+        console.print(f"  Email: {'[green]sent[/green]' if ok else '[red]failed[/red]'}")
+        sent = sent or ok
+    else:
+        console.print("  Email: [dim]not configured[/dim]")
+
+    if not sent:
+        console.print("\n[yellow]No notification channels configured.[/yellow]")
+        console.print("Set via env vars or profile config:")
+        console.print("  Slack: SNSHACK_SLACK_WEBHOOK")
+        console.print("  Email: SNSHACK_SMTP_HOST, SNSHACK_EMAIL_FROM, SNSHACK_EMAIL_TO")
+
+
+@notify_app.command("check")
+def notify_check():
+    """Run all alert checks (engagement drop, rate limits) and notify if issues found."""
+    from .notifier import run_all_checks
+
+    console.print("[bold]Running alert checks...[/bold]")
+    alerts = run_all_checks(profile=_active_profile)
+
+    if alerts:
+        console.print(f"\n[red]{len(alerts)} alert(s) triggered:[/red]")
+        for a in alerts:
+            console.print(f"  {a}")
+    else:
+        console.print("[green]All checks passed. No alerts.[/green]")
+
+
+@notify_app.command("status")
+def notify_status():
+    """Show notification configuration status."""
+    from .notifier import NotifyConfig
+
+    config = NotifyConfig.from_profile(_active_profile)
+
+    console.print("[bold]Notification Configuration:[/bold]")
+    console.print(f"  Slack webhook: {'[green]configured[/green]' if config.has_slack else '[dim]not set[/dim]'}")
+    if config.slack_channel:
+        console.print(f"  Slack channel: {config.slack_channel}")
+    console.print(f"  Email: {'[green]configured[/green]' if config.has_email else '[dim]not set[/dim]'}")
+    if config.has_email:
+        console.print(f"    From: {config.email_from}")
+        console.print(f"    To: {config.email_to}")
+        console.print(f"    SMTP: {config.email_smtp_host}:{config.email_smtp_port}")
+
+
 if __name__ == "__main__":
     app()

@@ -24,6 +24,12 @@ ai = [
 scraper = [
     "playwright>=1.40,<2",
 ]
+dashboard = [
+    "streamlit>=1.30,<2",
+]
+notify = [
+    "slack-sdk>=3.0,<4",
+]
 dev = [
     "pytest>=8.0,<9",
     "pytest-asyncio>=0.24,<1",

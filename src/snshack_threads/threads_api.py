@@ -498,6 +498,68 @@ class ThreadsGraphClient:
             params={"fields": "id,username,name,threads_biography,threads_profile_picture_url"},
         )
 
+    # ── Token Management ─────────────────────────────────
+
+    def refresh_long_lived_token(self) -> dict[str, Any]:
+        """Refresh a long-lived token before it expires.
+
+        Long-lived tokens are valid for 60 days. This endpoint exchanges
+        a valid (non-expired) long-lived token for a new one.
+        Should be called periodically (e.g. every 50 days).
+
+        Returns:
+            Dict with new access_token and expires_in.
+        """
+        resp = self._http.get(
+            "/oauth/access_token",
+            params={
+                "grant_type": "th_exchange_token",
+                "access_token": self._token,
+            },
+        )
+        if resp.status_code >= 400:
+            raise ThreadsAPIError(
+                f"Token refresh failed: {resp.text}",
+                status_code=resp.status_code,
+            )
+        data = resp.json()
+        new_token = data.get("access_token")
+        if new_token:
+            self._token = new_token
+            # Update profile config with new token
+            self._save_refreshed_token(new_token)
+        return data
+
+    def _save_refreshed_token(self, new_token: str) -> None:
+        """Save the refreshed token back to the profile config."""
+        settings = get_settings()
+        config_path = Path(settings.data_dir) / "config.json"
+        if config_path.exists():
+            try:
+                config = json.loads(config_path.read_text(encoding="utf-8"))
+                config["threads_access_token"] = new_token
+                config_path.write_text(
+                    json.dumps(config, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                logger.info("Refreshed token saved to %s", config_path)
+            except Exception as e:
+                logger.warning("Failed to save refreshed token: %s", e)
+
+    def get_token_info(self) -> dict[str, Any]:
+        """Debug token to check expiration."""
+        resp = self._http.get(
+            "/debug_token",
+            params={
+                "input_token": self._token,
+                "access_token": self._token,
+            },
+        )
+        if resp.status_code >= 400:
+            # debug_token may not be available, return basic info
+            return {"status": "unknown", "token_prefix": self._token[:8] + "..."}
+        return resp.json().get("data", {})
+
     # ── Rate Limit Info ───────────────────────────────────
 
     def get_rate_limit_usage(self) -> dict:
