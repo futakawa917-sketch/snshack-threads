@@ -1869,6 +1869,105 @@ def research_trend(
             console.print(f"  {h.get('name', '?')} (count: {h.get('count', 0)}, avg likes: {h.get('avg_likes', 0):.1f})")
 
 
+# ── autopilot (daily auto-generation + scheduling) ────────
+
+@app.command("autopilot")
+def autopilot_cmd(
+    topics: list[str] = typer.Option([], "--topic", "-t", help="Topics to generate about"),
+    date: str = typer.Option("", "--date", help="Target date YYYY-MM-DD (default: today)"),
+    method: str = typer.Option("threads", "--method", "-m", help="Publish method: threads or metricool"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Generate plan without publishing"),
+    posts_per_day: int = typer.Option(5, "--count", "-n", help="Posts per day"),
+):
+    """Auto-generate and schedule today's 5 posts (fully automated).
+
+    Determines strategy based on data maturity:
+      - bootstrap (<70 posts): Rotate all hooks evenly
+      - learning (70-150): Focus top hooks, explore others
+      - optimized (150+): Template + recycle, concentrate on winners
+
+    Examples:
+      snshack autopilot -t "業界テーマ1" -t "テーマ2"
+      snshack autopilot --dry-run
+      snshack autopilot --method metricool --date 2026-03-10
+    """
+    from .autopilot import execute_plan, generate_daily_plan
+
+    # Load profile hooks
+    _load_profile_hooks()
+
+    target = datetime.strptime(date, "%Y-%m-%d") if date else datetime.now()
+
+    if not topics:
+        settings = _get_settings()
+        topics = settings.get_research_keywords()
+        if not topics:
+            console.print("[red]No topics specified.[/red] Use --topic or set RESEARCH_KEYWORDS")
+            raise typer.Exit(1)
+
+    console.print(f"[dim]Generating plan for {target.strftime('%Y-%m-%d')}...[/dim]")
+
+    plan = generate_daily_plan(
+        topics=topics,
+        profile=_active_profile,
+        target_date=target,
+        posts_per_day=posts_per_day,
+    )
+
+    # Show plan
+    phase_labels = {"bootstrap": "立ち上げ期", "learning": "学習期", "optimized": "最適化期"}
+    console.print(f"\n[bold]Phase: {phase_labels.get(plan.phase, plan.phase)}[/bold] ({plan.total_posts} collected posts)")
+
+    if not plan.posts:
+        console.print("[red]No posts generated.[/red]")
+        if plan.skipped:
+            for skip in plan.skipped:
+                console.print(f"  [yellow]Skip: {skip}[/yellow]")
+        raise typer.Exit(1)
+
+    table = Table(title=f"Daily Plan: {plan.date} ({len(plan.posts)} posts)")
+    table.add_column("#", justify="right")
+    table.add_column("Hook")
+    table.add_column("Source")
+    table.add_column("Text", max_width=50)
+    table.add_column("Chars", justify="right")
+
+    for i, post in enumerate(plan.posts, 1):
+        table.add_row(
+            str(i),
+            post["hook"],
+            post["source"],
+            post["text"][:50],
+            str(len(post["text"])),
+        )
+    console.print(table)
+
+    if plan.skipped:
+        console.print(f"\n[yellow]Skipped: {len(plan.skipped)}[/yellow]")
+        for skip in plan.skipped:
+            console.print(f"  - {skip}")
+
+    if dry_run:
+        console.print("\n[dim]Dry run — nothing published.[/dim]")
+        # Show full texts
+        for i, post in enumerate(plan.posts, 1):
+            console.print(f"\n[bold]--- Post {i} ({post['hook']}) ---[/bold]")
+            console.print(post["text"])
+        return
+
+    # Execute
+    console.print(f"\n[dim]Publishing via {method}...[/dim]")
+    results = execute_plan(plan, publish_method=method, profile=_active_profile)
+
+    for r in results:
+        if "Failed" in r:
+            console.print(f"  [red]{r}[/red]")
+        else:
+            console.print(f"  [green]{r}[/green]")
+
+    console.print(f"\n[green]Autopilot complete: {len(plan.posts)} posts.[/green]")
+
+
 # ── hooks (industry customization) ────────────────────────
 
 hooks_app = typer.Typer(help="Hook pattern management (industry customization)")

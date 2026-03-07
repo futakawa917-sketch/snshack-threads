@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Auto-collect performance data for all profiles (or a specific one).
-# Intended to be run via cron.
+# Daily automation: collect performance, sync CSV, scrape competitors,
+# and auto-generate + schedule today's posts.
+# Intended to be run via cron (e.g. every morning at 7:00).
 #
 # Usage:
 #   ./scripts/auto-collect.sh              # all profiles
@@ -24,17 +25,17 @@ else
     exit 1
 fi
 
-run_collect() {
+run_daily() {
     local profile="$1"
-    local logfile="$LOG_DIR/collect_${profile}_${TIMESTAMP}.log"
+    local logfile="$LOG_DIR/daily_${profile}_${TIMESTAMP}.log"
 
-    echo "[$(date)] Collecting for profile: $profile" >> "$logfile"
+    echo "[$(date)] Daily automation for profile: $profile" >> "$logfile"
 
     # 1. Sync CSV from Metricool API
     echo "[$(date)] Syncing CSV..." >> "$logfile"
     snshack --profile "$profile" sync-csv >> "$logfile" 2>&1 || true
 
-    # 2. Collect performance data
+    # 2. Collect performance data for previous posts
     echo "[$(date)] Collecting performance..." >> "$logfile"
     snshack --profile "$profile" collect-performance >> "$logfile" 2>&1 || true
 
@@ -44,12 +45,16 @@ run_collect() {
         snshack --profile "$profile" competitor scrape >> "$logfile" 2>&1 || true
     fi
 
+    # 4. Auto-generate and schedule today's 5 posts
+    echo "[$(date)] Running autopilot..." >> "$logfile"
+    snshack --profile "$profile" autopilot >> "$logfile" 2>&1 || true
+
     echo "[$(date)] Done" >> "$logfile"
 }
 
 if [ $# -ge 1 ]; then
     # Specific profile
-    run_collect "$1"
+    run_daily "$1"
 else
     # All profiles
     PROFILES_DIR="$HOME/.snshack-threads/profiles"
@@ -61,10 +66,7 @@ else
     for profile_dir in "$PROFILES_DIR"/*/; do
         if [ -f "${profile_dir}config.json" ]; then
             profile_name="$(basename "$profile_dir")"
-            run_collect "$profile_name"
+            run_daily "$profile_name"
         fi
     done
 fi
-
-# Clean up logs older than 30 days
-find "$LOG_DIR" -name "collect_*.log" -mtime +30 -delete 2>/dev/null || true
