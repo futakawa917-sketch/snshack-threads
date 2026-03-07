@@ -25,9 +25,19 @@ class Settings(BaseModel):
     posts_per_day: int = Field(default=5)
     csv_path: str = Field(default_factory=lambda: os.getenv("THREADS_CSV_PATH", ""))
 
+    # Threads Graph API (for keyword search / competitor research)
+    threads_access_token: str = Field(default_factory=lambda: os.getenv("THREADS_ACCESS_TOKEN", ""))
+    research_keywords: str = Field(default_factory=lambda: os.getenv("RESEARCH_KEYWORDS", ""))
+
     def validate_credentials(self) -> bool:
         """Check that required credentials are set."""
         return bool(self.user_token and self.user_id and self.blog_id)
+
+    def get_research_keywords(self) -> list[str]:
+        """Parse comma-separated research keywords."""
+        if not self.research_keywords:
+            return []
+        return [kw.strip() for kw in self.research_keywords.split(",") if kw.strip()]
 
 
 def get_settings() -> Settings:

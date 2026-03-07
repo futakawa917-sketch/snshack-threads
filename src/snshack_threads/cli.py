@@ -399,6 +399,110 @@ def _show_content_insights(result):
             console.print(f"    [red]External links reduce reach by ~{penalty_pct:.0f}%[/red]")
 
 
+# ── competitor research ───────────────────────────────────────
+
+@app.command()
+def research(
+    keywords: list[str] = typer.Option([], "--keyword", "-k", help="Keywords to search (e.g. 補助金)"),
+    max_results: int = typer.Option(50, help="Max posts per keyword"),
+    top: int = typer.Option(5, help="Number of top posts to show"),
+):
+    """Research competitor posts by keyword via Threads API.
+
+    Searches public Threads posts, analyzes content patterns,
+    and compares with your own data. Fully automated.
+
+    Uses RESEARCH_KEYWORDS from .env if no --keyword provided.
+
+    Examples:
+      snshack research -k 補助金 -k 助成金
+      snshack research  # uses RESEARCH_KEYWORDS from .env
+    """
+    from .config import get_settings
+    from .csv_analyzer import analyze_optimal_times
+    from .research import research_genre
+    from .scheduler import _resolve_csv_path
+    from .threads_api import ThreadsAPIError, ThreadsGraphClient
+
+    settings = get_settings()
+    all_keywords = list(keywords) or settings.get_research_keywords()
+
+    if not all_keywords:
+        console.print("[red]No keywords provided.[/red] Use --keyword or set RESEARCH_KEYWORDS in .env")
+        raise typer.Exit(1)
+
+    # Get own hook patterns for gap analysis
+    own_hooks: set[str] = set()
+    csv_path = _resolve_csv_path()
+    if csv_path:
+        own_data = analyze_optimal_times(csv_path)
+        own_hooks = set(own_data.content.hook_patterns.keys())
+
+    try:
+        with ThreadsGraphClient() as client:
+            reports = research_genre(
+                client, all_keywords,
+                max_per_keyword=max_results,
+                own_hooks=own_hooks,
+            )
+    except ThreadsAPIError as e:
+        console.print(f"[red]Threads API error:[/red] {e}")
+        if "access_token" in str(e).lower() or e.status_code == 190:
+            console.print("THREADS_ACCESS_TOKEN that's expired or missing. Check .env")
+        raise typer.Exit(1)
+
+    for report in reports:
+        console.print()
+        console.print(f"[bold]Keyword: {report.keyword}[/bold] ({report.total_posts_found} posts found)")
+
+        if not report.posts:
+            console.print("  No posts found for this keyword.")
+            continue
+
+        console.print(f"  Avg likes: {report.avg_likes:,.1f} | Avg replies: {report.avg_replies:,.1f}")
+        console.print()
+
+        # Top posts
+        table = Table(title=f"Top {min(top, len(report.top_posts))} Posts")
+        table.add_column("Text", max_width=50)
+        table.add_column("Likes", justify="right")
+        table.add_column("Replies", justify="right")
+        table.add_column("Hooks")
+
+        for p in report.top_posts[:top]:
+            table.add_row(
+                p.text[:50],
+                f"{p.likes:,}",
+                f"{p.replies:,}",
+                ", ".join(p.hooks) if p.hooks else "-",
+            )
+
+        console.print(table)
+
+        # Hook patterns from competitors
+        if report.top_hooks:
+            console.print()
+            console.print("  [bold]Competitor Hook Patterns:[/bold]")
+            for hook_name, count, avg_likes in report.top_hooks:
+                console.print(f"    {hook_name}: {count} posts, avg {avg_likes:,.1f} likes")
+
+        # Length performance
+        if report.length_performance:
+            console.print()
+            console.print("  [bold]Text Length vs Likes (competitors):[/bold]")
+            for bucket, label in [("short", "<100字"), ("medium", "100-300字"), ("long", "300字+")]:
+                avg = report.length_performance.get(bucket, 0)
+                if avg > 0:
+                    console.print(f"    {label}: avg {avg:,.1f} likes")
+
+        # Hook gaps
+        if report.hook_gaps:
+            console.print()
+            console.print("  [bold red]Hook Gaps (competitors use, you don't):[/bold red]")
+            for gap in report.hook_gaps:
+                console.print(f"    - {gap}")
+
+
 # ── analytics ────────────────────────────────────────────────
 
 @app.command()
