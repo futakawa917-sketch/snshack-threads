@@ -71,38 +71,95 @@ class ABTest:
         return self.b_likes + self.b_replies
 
 
-def determine_winner(test: ABTest) -> ABTest:
-    """Determine the winner based on views and engagement.
+def _z_test_proportions(
+    successes_a: int, total_a: int,
+    successes_b: int, total_b: int,
+) -> tuple[float, float]:
+    """Two-proportion z-test. Returns (z_score, p_value).
 
-    Uses views as primary metric, engagement as tiebreaker.
+    Used to test if engagement rates differ significantly.
+    """
+    import math
+
+    if total_a == 0 or total_b == 0:
+        return 0.0, 1.0
+
+    p_a = successes_a / total_a
+    p_b = successes_b / total_b
+    p_pool = (successes_a + successes_b) / (total_a + total_b)
+
+    if p_pool == 0 or p_pool == 1:
+        return 0.0, 1.0
+
+    se = math.sqrt(p_pool * (1 - p_pool) * (1 / total_a + 1 / total_b))
+    if se == 0:
+        return 0.0, 1.0
+
+    z = (p_a - p_b) / se
+
+    # Approximate two-tailed p-value using standard normal CDF
+    # Using the rational approximation for erfc
+    p_value = 2 * _normal_sf(abs(z))
+    return z, p_value
+
+
+def _normal_sf(x: float) -> float:
+    """Survival function (1 - CDF) of standard normal distribution.
+
+    Uses Abramowitz & Stegun approximation (formula 7.1.26).
+    No scipy dependency needed.
+    """
+    import math
+
+    if x < 0:
+        return 1 - _normal_sf(-x)
+
+    # Constants for approximation
+    b0 = 0.2316419
+    b1 = 0.319381530
+    b2 = -0.356563782
+    b3 = 1.781477937
+    b4 = -1.821255978
+    b5 = 1.330274429
+
+    t = 1.0 / (1.0 + b0 * x)
+    phi = math.exp(-x * x / 2) / math.sqrt(2 * math.pi)
+
+    return phi * t * (b1 + t * (b2 + t * (b3 + t * (b4 + t * b5))))
+
+
+def determine_winner(test: ABTest) -> ABTest:
+    """Determine the winner using statistical significance testing.
+
+    Uses a two-proportion z-test on engagement rates (interactions/views)
+    plus a composite score for practical significance.
     """
     if test.a_views == 0 and test.b_views == 0:
         test.winner = "draw"
         test.confidence = "low"
         return test
 
-    # Primary: views ratio
-    if test.a_views > 0 and test.b_views > 0:
-        ratio = max(test.a_views, test.b_views) / min(test.a_views, test.b_views)
-    elif test.a_views > 0:
-        ratio = float("inf")
-    else:
-        ratio = float("inf")
+    # Statistical test: engagement rate comparison
+    z_score, p_value = _z_test_proportions(
+        test.a_total_engagement, test.a_views,
+        test.b_total_engagement, test.b_views,
+    )
 
-    if ratio >= 2.0:
-        test.confidence = "high"
-    elif ratio >= 1.3:
-        test.confidence = "medium"
+    # Determine statistical confidence
+    if p_value < 0.05:
+        test.confidence = "high"      # p < 0.05 → statistically significant
+    elif p_value < 0.10:
+        test.confidence = "medium"    # p < 0.10 → marginally significant
     else:
-        test.confidence = "low"
+        test.confidence = "low"       # not statistically significant
 
-    # Determine winner
+    # Practical significance: composite score
     a_score = test.a_views * 0.7 + test.a_total_engagement * 100
     b_score = test.b_views * 0.7 + test.b_total_engagement * 100
 
-    if abs(a_score - b_score) < a_score * 0.1:  # Within 10%
+    # If not statistically significant, declare draw
+    if test.confidence == "low":
         test.winner = "draw"
-        test.confidence = "low"
     elif a_score > b_score:
         test.winner = "A"
     else:

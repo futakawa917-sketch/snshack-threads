@@ -253,8 +253,8 @@ class TestABTest:
         test = ABTest(
             test_id="t1", theme="test",
             variant_a_text="A", variant_b_text="B",
-            a_views=5000, a_likes=50, a_replies=10,
-            b_views=1000, b_likes=10, b_replies=2,
+            a_views=5000, a_likes=200, a_replies=50,
+            b_views=5000, b_likes=30, b_replies=5,
         )
         determine_winner(test)
         assert test.winner == "A"
@@ -283,8 +283,8 @@ class TestABTest:
 
         result = manager.update_results(
             test.test_id,
-            a_views=5000, a_likes=50, a_replies=10, a_engagement=0.05,
-            b_views=1000, b_likes=10, b_replies=2, b_engagement=0.02,
+            a_views=5000, a_likes=200, a_replies=50, a_engagement=0.05,
+            b_views=5000, b_likes=30, b_replies=5, b_engagement=0.02,
         )
         assert result is not None
         assert result.winner == "A"

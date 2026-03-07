@@ -227,7 +227,7 @@ def parse_csv(csv_path: str | Path) -> list[dict]:
 
 # ── Hook Pattern Detection ───────────────────────────────────
 
-_HOOK_PATTERNS: list[tuple[str, re.Pattern]] = [
+_DEFAULT_HOOK_PATTERNS: list[tuple[str, re.Pattern]] = [
     # Original 6 patterns
     ("数字訴求", re.compile(r"[\d,]+[万億円%]|最大|[0-9]{2,}")),
     ("疑問形", re.compile(r"[？\?]|知ってた|ですか")),
@@ -244,11 +244,107 @@ _HOOK_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("議論喚起", re.compile(r"どう思う|賛否|議論|意見|反論|正直")),
 ]
 
+# Industry-specific hook presets
+INDUSTRY_HOOK_PRESETS: dict[str, list[tuple[str, str]]] = {
+    "飲食": [
+        ("季節感", r"春|夏|秋|冬|旬|季節|限定メニュー"),
+        ("食欲訴求", r"とろける|濃厚|ジューシー|ふわふわ|サクサク|もちもち"),
+        ("コスパ", r"コスパ|お得|ワンコイン|食べ放題|半額"),
+        ("新メニュー", r"新作|新メニュー|初登場|リニューアル"),
+    ],
+    "美容": [
+        ("ビフォーアフター", r"ビフォー|アフター|変化|変身|激変"),
+        ("悩み共感", r"悩み|困って|コンプレックス|気になる"),
+        ("トレンド", r"トレンド|流行|最新|話題|バズ"),
+        ("即効性", r"たった|だけで|すぐに|即|速攻"),
+    ],
+    "アパレル": [
+        ("トレンド", r"トレンド|流行|最旬|今季|新作"),
+        ("着回し", r"着回し|コーデ|合わせ方|万能|使える"),
+        ("プチプラ", r"プチプラ|コスパ|安い|お手頃|ユニクロ|GU"),
+        ("季節感", r"春|夏|秋|冬|季節|シーズン"),
+    ],
+    "不動産": [
+        ("数字訴求", r"[\d,]+万|坪|利回り|㎡|LDK"),
+        ("エリア", r"駅|徒歩|分|エリア|立地"),
+        ("比較", r"比較|vs|違い|どっち|選び方"),
+        ("注意喚起", r"注意|失敗|後悔|騙さ|落とし穴|やめて"),
+    ],
+    "教育": [
+        ("成果", r"合格|成績|点|偏差値|UP|上がった"),
+        ("悩み共感", r"悩み|困って|苦手|嫌い|挫折"),
+        ("メソッド", r"方法|やり方|コツ|勉強法|テクニック"),
+        ("保護者向け", r"お母さん|お父さん|保護者|親|子ども"),
+    ],
+    "EC・物販": [
+        ("セール", r"セール|SALE|割引|クーポン|ポイント|還元"),
+        ("レビュー", r"レビュー|口コミ|使ってみた|買ってみた|正直"),
+        ("比較", r"比較|vs|どっち|おすすめ|ランキング"),
+        ("新商品", r"新商品|新作|入荷|再販|予約"),
+    ],
+    "士業": [
+        ("法改正", r"改正|施行|義務化|新制度|法律"),
+        ("期限", r"締切|期限|期日|まで|急いで"),
+        ("事例", r"事例|ケース|実例|判例|相談"),
+        ("注意喚起", r"注意|罰則|違反|リスク|知らない"),
+    ],
+}
+
+# Active custom hooks (set via load_custom_hooks)
+_active_hook_patterns: list[tuple[str, re.Pattern]] | None = None
+
+# Keep reference for backward compatibility
+_HOOK_PATTERNS = _DEFAULT_HOOK_PATTERNS
+
+
+def load_custom_hooks(
+    industry: str | None = None,
+    custom_hooks: dict[str, str] | None = None,
+) -> None:
+    """Load industry-specific or custom hook patterns.
+
+    Args:
+        industry: Industry preset name (e.g. "飲食", "美容").
+        custom_hooks: Dict of {pattern_name: regex_string}.
+    """
+    global _active_hook_patterns, _HOOK_PATTERNS
+
+    patterns = list(_DEFAULT_HOOK_PATTERNS)
+
+    if industry and industry in INDUSTRY_HOOK_PRESETS:
+        for name, regex in INDUSTRY_HOOK_PRESETS[industry]:
+            patterns.append((name, re.compile(regex)))
+
+    if custom_hooks:
+        for name, regex in custom_hooks.items():
+            patterns.append((name, re.compile(regex)))
+
+    _active_hook_patterns = patterns
+    _HOOK_PATTERNS = patterns
+
+
+def reset_hooks() -> None:
+    """Reset to default hook patterns."""
+    global _active_hook_patterns, _HOOK_PATTERNS
+    _active_hook_patterns = None
+    _HOOK_PATTERNS = _DEFAULT_HOOK_PATTERNS
+
+
+def get_active_hooks() -> list[tuple[str, re.Pattern]]:
+    """Return the currently active hook patterns."""
+    return _active_hook_patterns if _active_hook_patterns is not None else _DEFAULT_HOOK_PATTERNS
+
+
+def list_industries() -> list[str]:
+    """Return available industry preset names."""
+    return list(INDUSTRY_HOOK_PRESETS.keys())
+
 
 def _detect_hooks(text: str) -> list[str]:
     """Detect hook patterns in the first line of a post."""
     first_line = text.split("\n")[0] if text else ""
-    return [name for name, pat in _HOOK_PATTERNS if pat.search(first_line)]
+    patterns = get_active_hooks()
+    return [name for name, pat in patterns if pat.search(first_line)]
 
 
 def _text_length_bucket(text: str) -> str:

@@ -3,12 +3,27 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Optional
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
 from . import __version__
+
+# Global state for active profile (set via --profile callback)
+_active_profile: str | None = None
+
+
+def _profile_callback(value: Optional[str]) -> Optional[str]:
+    global _active_profile
+    if value:
+        _active_profile = value
+        from .config import set_runtime_profile
+        set_runtime_profile(value)
+    return value
+
 
 app = typer.Typer(
     name="snshack",
@@ -20,10 +35,26 @@ console = Console()
 _DOW_NAMES = ["月", "火", "水", "木", "金", "土", "日"]
 
 
+@app.callback()
+def main(
+    profile: Optional[str] = typer.Option(
+        None, "--profile", "-p", help="Profile name to use",
+        callback=_profile_callback, is_eager=True,
+    ),
+):
+    """Threads automation & analytics via Metricool."""
+
+
 def _get_client():
     from .api import MetricoolClient
 
-    return MetricoolClient()
+    return MetricoolClient(profile=_active_profile)
+
+
+def _get_settings():
+    from .config import get_settings
+
+    return get_settings(profile=_active_profile)
 
 
 # ── info ─────────────────────────────────────────────────────
@@ -579,13 +610,12 @@ def research(
       snshack research -k 補助金 -k 助成金
       snshack research  # uses RESEARCH_KEYWORDS from .env
     """
-    from .config import get_settings
     from .csv_analyzer import analyze_optimal_times
     from .research import research_genre
     from .scheduler import _resolve_csv_path
     from .threads_api import ThreadsAPIError, ThreadsGraphClient
 
-    settings = get_settings()
+    settings = _get_settings()
     all_keywords = list(keywords) or settings.get_research_keywords()
 
     if not all_keywords:
@@ -672,8 +702,8 @@ def collect(
 ):
     """Collect performance data (views, likes) for published posts.
 
-    Fetches metrics from Metricool API for posts that were scheduled
-    at least --min-age hours ago. Run this daily to build up view data.
+    Fetches metrics from Metricool API first, then falls back to
+    Threads Graph API insights for any remaining uncollected posts.
 
     Example:
       snshack collect           # collect for posts 24h+ old
@@ -694,16 +724,58 @@ def collect(
 
     console.print(f"Collecting metrics for {len(pending)} posts...")
 
+    # Primary: Metricool API
     with _get_client() as client:
         updated = collect_performance(history, client, min_age_hours=min_age)
 
     if updated:
-        console.print(f"[green]Updated {len(updated)} posts with performance data:[/green]")
+        console.print(f"[green]Updated {len(updated)} posts via Metricool:[/green]")
         for r in updated:
             console.print(f"  {r.views:>6,} views | {r.likes:>3} likes | {r.text[:40]}...")
-    else:
-        console.print("[yellow]No matching posts found in Metricool.[/yellow]")
-        console.print("Posts may not have been published yet, or text didn't match.")
+
+    # Fallback: Threads Graph API insights for remaining uncollected
+    still_pending = history.get_pending_collection(min_age_hours=min_age)
+    if still_pending:
+        settings = _get_settings()
+        if settings.threads_access_token:
+            console.print(f"[dim]Trying Threads API for {len(still_pending)} remaining posts...[/dim]")
+            try:
+                from .threads_api import ThreadsGraphClient
+                with ThreadsGraphClient() as threads_client:
+                    my_posts = threads_client.get_my_posts(limit=50)
+                    fallback_count = 0
+                    for record in still_pending:
+                        for tp in my_posts:
+                            tp_text = (tp.get("text") or "").strip()
+                            if tp_text and record.text.strip() == tp_text:
+                                # Get detailed insights
+                                post_id = tp.get("id", "")
+                                if post_id:
+                                    try:
+                                        insights = threads_client.get_post_insights(post_id)
+                                        history.update_metrics(
+                                            record,
+                                            views=insights.get("views", 0),
+                                            likes=insights.get("likes", tp.get("like_count", 0)),
+                                            replies=insights.get("replies", tp.get("reply_count", 0)),
+                                            reposts=insights.get("reposts", tp.get("repost_count", 0)),
+                                            quotes=insights.get("quotes", tp.get("quote_count", 0)),
+                                            engagement=0.0,
+                                        )
+                                        fallback_count += 1
+                                    except Exception:
+                                        pass
+                                break
+                    if fallback_count:
+                        console.print(f"[green]Updated {fallback_count} posts via Threads API.[/green]")
+            except Exception as e:
+                console.print(f"[dim]Threads API fallback skipped: {e}[/dim]")
+        else:
+            console.print(f"[yellow]{len(still_pending)} posts unmatched.[/yellow] Set THREADS_ACCESS_TOKEN for fallback.")
+
+    final_pending = history.get_pending_collection(min_age_hours=min_age)
+    if final_pending:
+        console.print(f"[yellow]{len(final_pending)} posts still uncollected.[/yellow]")
 
 
 @app.command()
@@ -1337,6 +1409,1033 @@ def ab_result(
             console.print("  [yellow]Draw[/yellow]")
         elif test.winner:
             console.print(f"  [green]Winner: {test.winner}[/green] ({test.confidence})")
+
+
+# ── Threads direct publishing (Meta API) ──────────────────
+
+threads_app = typer.Typer(help="Direct Threads publishing via Meta Graph API")
+app.add_typer(threads_app, name="threads")
+
+
+@threads_app.command("publish")
+def threads_publish(
+    text: str = typer.Argument(help="Post text"),
+    image_url: str = typer.Option("", "--image", help="Public image URL (optional)"),
+    reply_control: str = typer.Option("everyone", "--reply", help="Reply control: everyone, accounts_you_follow, mentioned_only"),
+    cta: bool = typer.Option(False, "--cta", help="Auto-append CTA"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview without publishing"),
+):
+    """Publish a post directly via Threads API (not Metricool)."""
+    from .content_guard import append_cta, check_ng
+    from .threads_api import ThreadsGraphClient
+
+    # NG check
+    issues = check_ng(text)
+    if issues:
+        console.print("[red]NG detected:[/red]")
+        for issue in issues:
+            console.print(f"  - {issue}")
+        raise typer.Exit(1)
+
+    if cta:
+        text = append_cta(text)
+
+    if dry_run:
+        console.print("[bold]Preview:[/bold]")
+        console.print(text)
+        console.print(f"\n[dim]{len(text)}chars | reply: {reply_control}[/dim]")
+        return
+
+    with ThreadsGraphClient() as client:
+        if image_url:
+            post_id = client.create_image_post(text, image_url, reply_control)
+        else:
+            post_id = client.create_text_post(text, reply_control)
+
+    console.print(f"[green]Published![/green]  Post ID: {post_id}")
+
+
+@threads_app.command("publish-file")
+def threads_publish_file(
+    file_path: str = typer.Argument(help="File with post texts (one per section, separated by ---)"),
+    interval: int = typer.Option(5, "--interval", help="Seconds between posts"),
+    cta: bool = typer.Option(False, "--cta", help="Auto-append CTA"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview without publishing"),
+):
+    """Publish multiple posts from a file via Threads API."""
+    import time as time_mod
+
+    from .content_guard import append_cta, check_ng
+    from .threads_api import ThreadsGraphClient
+
+    content = Path(file_path).read_text(encoding="utf-8")
+    posts = [p.strip() for p in content.split("---") if p.strip()]
+
+    if not posts:
+        console.print("[red]No posts found in file.[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"Found {len(posts)} post(s)")
+
+    for i, text in enumerate(posts, 1):
+        issues = check_ng(text)
+        if issues:
+            console.print(f"[red]Post {i}: NG detected - {', '.join(issues)}[/red]")
+            continue
+
+        if cta:
+            text = append_cta(text)
+
+        if dry_run:
+            console.print(f"\n[bold]--- Post {i} ---[/bold]")
+            console.print(text)
+            console.print(f"[dim]{len(text)}chars[/dim]")
+            continue
+
+        with ThreadsGraphClient() as client:
+            post_id = client.create_text_post(text)
+            console.print(f"[green]Post {i} published:[/green] {post_id}")
+
+        if i < len(posts):
+            time_mod.sleep(interval)
+
+
+@threads_app.command("my-posts")
+def threads_my_posts(
+    limit: int = typer.Option(10, "--limit", "-n", help="Number of posts to show"),
+):
+    """List your recent Threads posts (via Meta API)."""
+    from .threads_api import ThreadsGraphClient
+
+    with ThreadsGraphClient() as client:
+        posts = client.get_my_posts(limit=limit)
+
+    if not posts:
+        console.print("[yellow]No posts found.[/yellow]")
+        return
+
+    table = Table(title="Your Recent Threads Posts")
+    table.add_column("Date")
+    table.add_column("Text", max_width=50)
+    table.add_column("Likes", justify="right")
+    table.add_column("Replies", justify="right")
+
+    for p in posts:
+        ts = p.get("timestamp", "")[:10]
+        text = (p.get("text", "") or "")[:50]
+        table.add_row(
+            ts,
+            text,
+            str(p.get("like_count", 0)),
+            str(p.get("reply_count", 0)),
+        )
+    console.print(table)
+
+
+@threads_app.command("insights")
+def threads_insights(
+    post_id: str = typer.Argument(help="Post ID to get insights for"),
+):
+    """Get detailed insights for a specific post."""
+    from .threads_api import ThreadsGraphClient
+
+    with ThreadsGraphClient() as client:
+        insights = client.get_post_insights(post_id)
+
+    if not insights:
+        console.print("[yellow]No insights available.[/yellow]")
+        return
+
+    console.print(f"[bold]Post: {post_id}[/bold]")
+    for metric, value in insights.items():
+        console.print(f"  {metric}: {value:,}")
+
+
+@threads_app.command("me")
+def threads_me():
+    """Show your Threads profile info."""
+    from .threads_api import ThreadsGraphClient
+
+    with ThreadsGraphClient() as client:
+        me = client.get_me()
+
+    console.print(f"[bold]@{me.get('username', '?')}[/bold]  {me.get('name', '')}")
+    console.print(f"  ID: {me.get('id', '?')}")
+    bio = me.get("threads_biography", "")
+    if bio:
+        console.print(f"  Bio: {bio}")
+
+
+# ── rate limit status ─────────────────────────────────────
+
+@app.command("rate-limit")
+def rate_limit_status():
+    """Show Threads API rate limit usage."""
+    from .threads_api import RateLimiter
+
+    limiter = RateLimiter()
+    usage = limiter.get_usage_summary()
+
+    console.print("[bold]Threads API Rate Limits[/bold]")
+
+    for name, data in usage.items():
+        used = data["used"]
+        limit = data["limit"]
+        remaining = data["remaining"]
+        pct = (used / limit * 100) if limit else 0
+
+        color = "green" if pct < 50 else "yellow" if pct < 80 else "red"
+        window = "7 days" if name == "search" else "24 hours"
+
+        console.print(
+            f"  {name}: [{color}]{used}/{limit}[/{color}] "
+            f"(remaining: {remaining}, window: {window})"
+        )
+
+
+# ── competitor watch ───────────────────────────────────────
+
+competitor_app = typer.Typer(help="Competitor account watching & research")
+app.add_typer(competitor_app, name="competitor")
+
+
+@competitor_app.command("add")
+def competitor_add(
+    username: str = typer.Argument(help="Threads username (without @)"),
+    display_name: str = typer.Option("", "--name", help="Display name"),
+    notes: str = typer.Option("", "--notes", help="Notes (e.g. 'direct competitor')"),
+):
+    """Add a competitor account to watch."""
+    from .research_store import ResearchStore
+
+    store = ResearchStore()
+    try:
+        account = store.add_competitor(username, display_name, notes)
+        console.print(f"[green]Added competitor: @{account.username}[/green]")
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+
+@competitor_app.command("remove")
+def competitor_remove(
+    username: str = typer.Argument(help="Username to remove"),
+):
+    """Remove a competitor from watch list."""
+    from .research_store import ResearchStore
+
+    store = ResearchStore()
+    if store.remove_competitor(username):
+        console.print(f"[green]Removed @{username}[/green]")
+    else:
+        console.print(f"[red]@{username} not found.[/red]")
+
+
+@competitor_app.command("list")
+def competitor_list_cmd():
+    """List watched competitor accounts."""
+    from .research_store import ResearchStore
+
+    store = ResearchStore()
+    competitors = store.list_competitors()
+
+    if not competitors:
+        console.print("[yellow]No competitors registered.[/yellow] Use 'snshack competitor add'")
+        return
+
+    table = Table(title="Watched Competitors")
+    table.add_column("Username")
+    table.add_column("Name")
+    table.add_column("Notes")
+    table.add_column("Added")
+
+    for c in competitors:
+        table.add_row(
+            f"@{c.username}",
+            c.display_name or "-",
+            c.notes or "-",
+            c.added_at[:10] if c.added_at else "-",
+        )
+    console.print(table)
+
+
+@competitor_app.command("scrape")
+def competitor_scrape(
+    username: str = typer.Argument(default=None, help="Username (omit for all watched)"),
+    max_posts: int = typer.Option(20, "--max-posts", help="Max posts to scrape"),
+    no_headless: bool = typer.Option(False, "--no-headless", help="Show browser window"),
+):
+    """Scrape competitor profiles via browser (Playwright)."""
+    from .browser_scraper import scrape_profile
+    from .csv_analyzer import _detect_hooks
+    from .research_store import CompetitorSnapshot, ResearchStore
+
+    store = ResearchStore()
+
+    if username:
+        usernames = [username]
+    else:
+        competitors = store.list_competitors()
+        if not competitors:
+            console.print("[yellow]No competitors registered.[/yellow]")
+            return
+        usernames = [c.username for c in competitors]
+
+    for uname in usernames:
+        console.print(f"[dim]Scraping @{uname}...[/dim]")
+        try:
+            profile = scrape_profile(uname, max_posts=max_posts, headless=not no_headless)
+        except ImportError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1)
+
+        console.print(f"  [bold]@{profile.username}[/bold]  {profile.display_name}")
+        console.print(f"  {profile.followers_text}")
+        console.print(f"  Posts found: {len(profile.posts)}")
+
+        if profile.posts:
+            # Analyze hooks
+            all_hooks: list[str] = []
+            for p in profile.posts:
+                all_hooks.extend(_detect_hooks(p.text))
+
+            avg_likes = sum(p.likes for p in profile.posts) / len(profile.posts)
+            avg_replies = sum(p.replies for p in profile.posts) / len(profile.posts)
+
+            # Save snapshot
+            snapshot = CompetitorSnapshot(
+                username=uname,
+                timestamp=profile.scraped_at,
+                posts=[
+                    {"text": p.text[:200], "likes": p.likes, "replies": p.replies}
+                    for p in profile.posts[:10]
+                ],
+                post_count=len(profile.posts),
+                avg_likes=avg_likes,
+                avg_replies=avg_replies,
+                top_hooks=list(set(all_hooks)),
+            )
+            store.save_competitor_snapshot(snapshot)
+
+            # Show top posts
+            top = sorted(profile.posts, key=lambda p: p.likes, reverse=True)[:5]
+            table = Table(title=f"@{uname} Top Posts")
+            table.add_column("Text", max_width=50)
+            table.add_column("Likes", justify="right")
+            table.add_column("Replies", justify="right")
+            table.add_column("Hooks")
+
+            for p in top:
+                hooks = ", ".join(_detect_hooks(p.text)) or "-"
+                table.add_row(p.text[:50], str(p.likes), str(p.replies), hooks)
+
+            console.print(table)
+        console.print()
+
+
+@competitor_app.command("history")
+def competitor_history(
+    username: str = typer.Argument(help="Username to show history for"),
+    days: int = typer.Option(90, "--days", help="Days to look back"),
+):
+    """Show competitor trend over time."""
+    from .research_store import ResearchStore
+
+    store = ResearchStore()
+    snapshots = store.get_competitor_history(username, days=days)
+
+    if not snapshots:
+        console.print(f"[yellow]No data for @{username}.[/yellow] Run 'snshack competitor scrape' first.")
+        return
+
+    table = Table(title=f"@{username} Trend ({len(snapshots)} snapshots)")
+    table.add_column("Date")
+    table.add_column("Posts", justify="right")
+    table.add_column("Avg Likes", justify="right")
+    table.add_column("Avg Replies", justify="right")
+    table.add_column("Hooks")
+
+    for s in snapshots:
+        table.add_row(
+            s.timestamp[:10],
+            str(s.post_count),
+            f"{s.avg_likes:.1f}",
+            f"{s.avg_replies:.1f}",
+            ", ".join(s.top_hooks[:3]) or "-",
+        )
+    console.print(table)
+
+
+# ── research with persistence ─────────────────────────────
+
+@app.command("research-save")
+def research_save(
+    keywords: list[str] = typer.Option([], "--keyword", "-k", help="Keywords to search"),
+    max_results: int = typer.Option(50, "--max", help="Max results per keyword"),
+):
+    """Run keyword research and save results for trend tracking."""
+    from .csv_analyzer import analyze_optimal_times
+    from .research import search_and_analyze
+    from .research_store import ResearchSnapshot, ResearchStore
+    from .scheduler import _resolve_csv_path
+    from .threads_api import ThreadsAPIError, ThreadsGraphClient
+
+    settings = _get_settings()
+    all_keywords = list(keywords) or settings.get_research_keywords()
+
+    if not all_keywords:
+        console.print("[red]No keywords.[/red] Use --keyword or set RESEARCH_KEYWORDS")
+        raise typer.Exit(1)
+
+    # Get own hooks for gap analysis
+    own_hooks: set[str] = set()
+    csv_path = _resolve_csv_path(settings)
+    if csv_path:
+        try:
+            result = analyze_optimal_times(csv_path)
+            own_hooks = set(result.content.hook_patterns.keys())
+        except Exception:
+            pass
+
+    store = ResearchStore()
+
+    try:
+        with ThreadsGraphClient() as client:
+            for kw in all_keywords:
+                console.print(f"[dim]Searching: {kw}...[/dim]")
+                report = search_and_analyze(client, kw, max_results=max_results, own_hooks=own_hooks)
+
+                snapshot = ResearchSnapshot(
+                    keyword=kw,
+                    timestamp=datetime.now().isoformat(),
+                    total_posts=report.total_posts_found,
+                    avg_likes=report.avg_likes,
+                    avg_replies=report.avg_replies,
+                    avg_engagement=report.avg_engagement,
+                    top_hooks=[
+                        {"name": name, "count": count, "avg_likes": avg}
+                        for name, count, avg in report.top_hooks[:5]
+                    ],
+                    top_posts=[
+                        {"text": p.text[:200], "likes": p.likes, "replies": p.replies}
+                        for p in report.top_posts[:5]
+                    ],
+                    hook_gaps=report.hook_gaps,
+                )
+                store.save_research_snapshot(snapshot)
+
+                console.print(f"  Posts: {report.total_posts_found}  Avg likes: {report.avg_likes:.1f}")
+                if report.hook_gaps:
+                    console.print(f"  [yellow]Hook gaps:[/yellow] {', '.join(report.hook_gaps)}")
+
+    except ThreadsAPIError as e:
+        console.print(f"[red]API error: {e}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"\n[green]Saved {len(all_keywords)} keyword snapshot(s).[/green]")
+
+
+@app.command("research-trend")
+def research_trend(
+    keyword: str = typer.Argument(help="Keyword to show trend for"),
+    days: int = typer.Option(90, "--days", help="Days to look back"),
+):
+    """Show keyword research trend over time."""
+    from .research_store import ResearchStore
+
+    store = ResearchStore()
+    trend = store.get_keyword_trend(keyword, days=days)
+
+    if trend.get("snapshots", 0) == 0:
+        console.print(f"[yellow]No data for '{keyword}'.[/yellow] Run 'snshack research-save' first.")
+        return
+
+    console.print(f"[bold]Keyword: {keyword}[/bold]  ({trend['snapshots']} snapshots)")
+    console.print(f"  Latest avg likes: {trend['latest_avg_likes']:.1f}")
+    console.print(f"  Latest avg engagement: {trend['latest_avg_engagement']:.1f}")
+
+    if trend.get("trend_likes"):
+        table = Table(title="Likes Trend")
+        table.add_column("Date")
+        table.add_column("Avg Likes", justify="right")
+
+        for entry in trend["trend_likes"]:
+            table.add_row(entry["date"], f"{entry['avg_likes']:.1f}")
+        console.print(table)
+
+    if trend.get("trending_hooks"):
+        console.print("\n[bold]Trending hooks:[/bold]")
+        for h in trend["trending_hooks"]:
+            console.print(f"  {h.get('name', '?')} (count: {h.get('count', 0)}, avg likes: {h.get('avg_likes', 0):.1f})")
+
+
+# ── hooks (industry customization) ────────────────────────
+
+hooks_app = typer.Typer(help="Hook pattern management (industry customization)")
+app.add_typer(hooks_app, name="hooks")
+
+
+@hooks_app.command("industries")
+def hooks_industries():
+    """List available industry presets."""
+    from .csv_analyzer import INDUSTRY_HOOK_PRESETS, list_industries
+
+    for industry in list_industries():
+        patterns = INDUSTRY_HOOK_PRESETS[industry]
+        names = ", ".join(name for name, _ in patterns)
+        console.print(f"  [bold]{industry}[/bold]: {names}")
+
+
+@hooks_app.command("set")
+def hooks_set(
+    industry: str = typer.Option("", "--industry", "-i", help="Industry preset name"),
+):
+    """Set industry-specific hook patterns for the active profile."""
+    import json
+
+    from .config import _profile_config_path, _read_active_profile
+    from .csv_analyzer import INDUSTRY_HOOK_PRESETS
+
+    if industry and industry not in INDUSTRY_HOOK_PRESETS:
+        console.print(f"[red]Unknown industry: {industry}[/red]")
+        console.print("Available: " + ", ".join(INDUSTRY_HOOK_PRESETS.keys()))
+        raise typer.Exit(1)
+
+    target = _active_profile or _read_active_profile()
+    config_path = _profile_config_path(target)
+
+    if not config_path.exists():
+        console.print(f"[red]Profile '{target}' not found.[/red]")
+        raise typer.Exit(1)
+
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["industry"] = industry
+    config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    console.print(f"[green]Profile '{target}' industry set to '{industry}'[/green]")
+    patterns = INDUSTRY_HOOK_PRESETS.get(industry, [])
+    for name, regex in patterns:
+        console.print(f"  + {name}: {regex}")
+
+
+@hooks_app.command("show")
+def hooks_show():
+    """Show currently active hook patterns."""
+    from .csv_analyzer import get_active_hooks
+
+    # Load profile industry if set
+    _load_profile_hooks()
+
+    patterns = get_active_hooks()
+    console.print(f"[bold]Active hook patterns ({len(patterns)}):[/bold]")
+    for name, pat in patterns:
+        console.print(f"  {name}: {pat.pattern}")
+
+
+def _load_profile_hooks() -> None:
+    """Load industry hooks from the active profile config."""
+    import json
+
+    from .config import _profile_config_path, _read_active_profile
+    from .csv_analyzer import load_custom_hooks
+
+    target = _active_profile or _read_active_profile()
+    config_path = _profile_config_path(target)
+
+    if not config_path.exists():
+        return
+
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return
+
+    industry = config.get("industry", "")
+    custom_hooks = config.get("custom_hooks", {})
+
+    if industry or custom_hooks:
+        load_custom_hooks(industry=industry or None, custom_hooks=custom_hooks or None)
+
+
+# ── CSV sync ───────────────────────────────────────────────
+
+@app.command("sync-csv")
+def sync_csv_cmd(
+    days: int = typer.Option(90, help="Number of days to sync"),
+    output: str = typer.Option("", "--output", "-o", help="Output CSV path (default: auto)"),
+):
+    """Fetch posts from Metricool and generate CSV (replaces manual export)."""
+    from .csv_sync import sync_csv
+
+    out_path = output or None
+    with _get_client() as client:
+        result = sync_csv(client, days=days, output_path=out_path, profile=_active_profile)
+
+    console.print(f"[green]CSV synced:[/green] {result}")
+
+
+# ── AI content generation ──────────────────────────────────
+
+ai_app = typer.Typer(help="AI-powered content generation (Claude)")
+app.add_typer(ai_app, name="ai")
+
+
+@ai_app.command("generate")
+def ai_generate(
+    topic: str = typer.Argument(help="Topic for the post"),
+    hook: str = typer.Option("", "--hook", "-h", help="Hook pattern (e.g. 数字訴求, 疑問形)"),
+    tone: str = typer.Option("", "--tone", help="Tone of voice"),
+    count: int = typer.Option(1, "--count", "-n", help="Number of posts to generate"),
+):
+    """Generate post drafts using AI."""
+    from .content_generator import generate_post
+
+    for i in range(count):
+        post = generate_post(topic=topic, hook_type=hook, tone=tone)
+        if count > 1:
+            console.print(f"\n[bold]--- Draft {i + 1} ---[/bold]")
+        console.print()
+        console.print(post.text)
+        console.print(f"\n[dim]Hook: {post.hook_type or 'auto'} | {len(post.text)}chars[/dim]")
+
+
+@ai_app.command("from-template")
+def ai_from_template(
+    topic: str = typer.Argument(help="Topic for the post"),
+    hook: str = typer.Option("", "--hook", "-h", help="Hook pattern to use"),
+    min_views: int = typer.Option(1000, "--min-views", help="Min views for template examples"),
+):
+    """Generate a post based on your best-performing templates."""
+    from .content_generator import generate_from_template
+    from .post_history import PostHistory
+    from .templates import generate_templates
+
+    history = PostHistory()
+    templates = generate_templates(history, min_views=min_views)
+
+    if not templates:
+        console.print("[yellow]No templates available.[/yellow] Need more posts with collected metrics.")
+        return
+
+    # Find matching template or use best one
+    target = None
+    if hook:
+        target = next((t for t in templates if t.hook_type == hook), None)
+    if target is None:
+        target = templates[0]
+        console.print(f"[dim]Using best template: {target.hook_type} (avg {target.avg_views:,.0f} views)[/dim]")
+
+    post = generate_from_template(
+        topic=topic,
+        hook_type=target.hook_type,
+        example_posts=target.example_posts,
+        best_length=target.best_length_bucket,
+    )
+
+    console.print()
+    console.print(post.text)
+    console.print(f"\n[dim]Hook: {post.hook_type} | Template: {target.post_count} posts avg {target.avg_views:,.0f} views[/dim]")
+
+
+@ai_app.command("recycle")
+def ai_recycle(
+    new_hook: str = typer.Option("", "--hook", "-h", help="New hook pattern"),
+    min_views: int = typer.Option(1000, "--min-views", help="Min views for recyclable posts"),
+    index: int = typer.Option(0, "--index", "-i", help="Which recyclable post to use (0=best)"),
+):
+    """Rewrite a high-performing post with a different hook."""
+    from .content_generator import generate_recycle
+    from .content_recycler import find_recyclable_posts
+    from .post_history import PostHistory
+
+    history = PostHistory()
+    recyclable = find_recyclable_posts(history, min_views=min_views)
+
+    if not recyclable:
+        console.print("[yellow]No recyclable posts found.[/yellow]")
+        return
+
+    if index >= len(recyclable):
+        index = 0
+
+    original = recyclable[index]
+    console.print(f"[dim]Recycling: {original.text[:60]}... ({original.views:,} views)[/dim]")
+
+    post = generate_recycle(
+        original_text=original.text,
+        new_hook_type=new_hook,
+        original_views=original.views,
+    )
+
+    console.print()
+    console.print(post.text)
+    console.print(f"\n[dim]New hook: {post.hook_type or 'auto'} | {len(post.text)}chars[/dim]")
+
+
+@ai_app.command("ab")
+def ai_ab(
+    topic: str = typer.Argument(help="Shared topic"),
+    hook_a: str = typer.Option("数字訴求", "--hook-a", help="Hook for variant A"),
+    hook_b: str = typer.Option("疑問形", "--hook-b", help="Hook for variant B"),
+):
+    """Generate two A/B test variants with different hooks."""
+    from .content_generator import generate_ab_variants
+
+    a, b = generate_ab_variants(topic, hook_a, hook_b)
+
+    console.print("\n[bold]Variant A[/bold]  [dim]({hook_a})[/dim]")
+    console.print(a.text)
+
+    console.print(f"\n[bold]Variant B[/bold]  [dim]({hook_b})[/dim]")
+    console.print(b.text)
+
+    console.print(f"\n[dim]A: {len(a.text)}chars | B: {len(b.text)}chars[/dim]")
+
+
+@ai_app.command("batch")
+def ai_batch(
+    topics: list[str] = typer.Option([], "--topic", "-t", help="Topics (one per post)"),
+    hooks: list[str] = typer.Option([], "--hook", "-h", help="Hook patterns to cycle through"),
+    tone: str = typer.Option("", "--tone", help="Tone of voice"),
+):
+    """Generate multiple posts at once."""
+    from .content_generator import generate_batch
+
+    if not topics:
+        console.print("[red]At least one --topic is required.[/red]")
+        raise typer.Exit(1)
+
+    posts = generate_batch(topics, hook_types=hooks or None, tone=tone)
+
+    for i, post in enumerate(posts, 1):
+        console.print(f"\n[bold]--- {i}. {post.topic} ({post.hook_type or 'auto'}) ---[/bold]")
+        console.print(post.text)
+        console.print(f"[dim]{len(post.text)}chars[/dim]")
+
+
+# ── profile management ─────────────────────────────────────
+
+profile_app = typer.Typer(help="Manage client profiles")
+app.add_typer(profile_app, name="profile")
+
+
+@profile_app.command("list")
+def profile_list():
+    """List all profiles."""
+    from .config import _read_active_profile, list_profiles
+
+    profiles = list_profiles()
+    active = _read_active_profile()
+
+    if not profiles:
+        console.print("[yellow]No profiles yet.[/yellow] Create one with 'snshack profile create'")
+        return
+
+    for name in profiles:
+        marker = " [green]*[/green]" if name == active else ""
+        console.print(f"  {name}{marker}")
+
+
+@profile_app.command("create")
+def profile_create(
+    name: str = typer.Argument(help="Profile name (e.g. client-a)"),
+    user_token: str = typer.Option("", "--token", help="Metricool API token"),
+    user_id: str = typer.Option("", "--user-id", help="Metricool user ID"),
+    blog_id: str = typer.Option("", "--blog-id", help="Metricool blog ID"),
+    timezone: str = typer.Option("Asia/Tokyo", "--tz", help="Timezone"),
+    csv_path: str = typer.Option("", "--csv", help="Path to Threads CSV"),
+    threads_token: str = typer.Option("", "--threads-token", help="Threads Graph API token"),
+    keywords: str = typer.Option("", "--keywords", help="Research keywords (comma-separated)"),
+):
+    """Create a new client profile."""
+    from .config import create_profile
+
+    try:
+        pdir = create_profile(
+            name,
+            user_token=user_token,
+            user_id=user_id,
+            blog_id=blog_id,
+            timezone=timezone,
+            csv_path=csv_path,
+            threads_access_token=threads_token,
+            research_keywords=keywords,
+        )
+        console.print(f"[green]Profile '{name}' created.[/green]  {pdir}")
+    except FileExistsError:
+        console.print(f"[red]Profile '{name}' already exists.[/red]")
+        raise typer.Exit(1)
+
+
+@profile_app.command("switch")
+def profile_switch(
+    name: str = typer.Argument(help="Profile name to activate"),
+):
+    """Switch active profile."""
+    from .config import switch_profile
+
+    try:
+        switch_profile(name)
+        console.print(f"[green]Switched to '{name}'[/green]")
+    except FileNotFoundError:
+        console.print(f"[red]Profile '{name}' not found.[/red]")
+        raise typer.Exit(1)
+
+
+@profile_app.command("show")
+def profile_show(
+    name: str = typer.Argument(default=None, help="Profile name (default: active)"),
+):
+    """Show profile settings."""
+    from .config import _read_active_profile, get_settings
+
+    target = name or _active_profile or _read_active_profile()
+    settings = get_settings(profile=target)
+
+    console.print(f"[bold]Profile: {settings.profile_name}[/bold]")
+    console.print(f"  Data dir : {settings.data_dir}")
+    console.print(f"  Token    : {'***' + settings.user_token[-4:] if len(settings.user_token) > 4 else '(not set)'}")
+    console.print(f"  User ID  : {settings.user_id or '(not set)'}")
+    console.print(f"  Blog ID  : {settings.blog_id or '(not set)'}")
+    console.print(f"  Timezone : {settings.timezone}")
+    console.print(f"  CSV      : {settings.csv_path or '(not set)'}")
+    console.print(f"  Threads  : {'set' if settings.threads_access_token else '(not set)'}")
+    console.print(f"  Keywords : {settings.research_keywords or '(not set)'}")
+
+
+@profile_app.command("delete")
+def profile_delete(
+    name: str = typer.Argument(help="Profile name to delete"),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
+):
+    """Delete a profile and all its data."""
+    from .config import delete_profile
+
+    if not force:
+        confirm = typer.confirm(f"Delete profile '{name}' and all its data?")
+        if not confirm:
+            raise typer.Abort()
+
+    try:
+        delete_profile(name)
+        console.print(f"[green]Profile '{name}' deleted.[/green]")
+    except FileNotFoundError:
+        console.print(f"[red]Profile '{name}' not found.[/red]")
+        raise typer.Exit(1)
+
+
+@profile_app.command("migrate")
+def profile_migrate(
+    name: str = typer.Option("default", "--name", "-n", help="Profile name for migrated settings"),
+):
+    """Migrate .env settings to a profile."""
+    from .config import migrate_env_to_profile
+
+    pdir = migrate_env_to_profile(name)
+    if pdir:
+        console.print(f"[green]Migrated .env to profile '{name}'[/green]  {pdir}")
+    else:
+        console.print("[yellow]Nothing to migrate[/yellow] (profile exists or no .env credentials)")
+
+
+@profile_app.command("edit")
+def profile_edit(
+    name: str = typer.Argument(default=None, help="Profile name (default: active)"),
+    token: str = typer.Option(None, "--token", help="Metricool API token"),
+    user_id: str = typer.Option(None, "--user-id", help="Metricool user ID"),
+    blog_id: str = typer.Option(None, "--blog-id", help="Metricool blog ID"),
+    timezone: str = typer.Option(None, "--tz", help="Timezone"),
+    csv_path: str = typer.Option(None, "--csv", help="Path to Threads CSV"),
+    threads_token: str = typer.Option(None, "--threads-token", help="Threads Graph API token"),
+    keywords: str = typer.Option(None, "--keywords", help="Research keywords"),
+):
+    """Update profile settings."""
+    import json
+
+    from .config import _profile_config_path, _read_active_profile
+
+    target = name or _active_profile or _read_active_profile()
+    config_path = _profile_config_path(target)
+
+    if not config_path.exists():
+        console.print(f"[red]Profile '{target}' not found.[/red]")
+        raise typer.Exit(1)
+
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    updates = {
+        "user_token": token,
+        "user_id": user_id,
+        "blog_id": blog_id,
+        "timezone": timezone,
+        "csv_path": csv_path,
+        "threads_access_token": threads_token,
+        "research_keywords": keywords,
+    }
+    changed = 0
+    for key, value in updates.items():
+        if value is not None:
+            config[key] = value
+            changed += 1
+
+    if changed == 0:
+        console.print("[yellow]No changes specified.[/yellow]")
+        return
+
+    config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    console.print(f"[green]Profile '{target}' updated ({changed} field(s)).[/green]")
+
+
+# ── cron automation ────────────────────────────────────────
+
+cron_app = typer.Typer(help="Manage scheduled automation (cron)")
+app.add_typer(cron_app, name="cron")
+
+_CRON_TAG = "snshack-threads"
+
+
+def _find_project_dir() -> str:
+    """Find the project directory (where scripts/ lives)."""
+    import importlib.resources
+    # Walk up from this file to find the project root
+    this_file = Path(__file__).resolve()
+    for parent in this_file.parents:
+        if (parent / "scripts" / "auto-collect.sh").exists():
+            return str(parent)
+    return str(Path.cwd())
+
+
+@cron_app.command("setup")
+def cron_setup(
+    interval: str = typer.Option("hourly", help="Interval: hourly, daily, or cron expression like '0 */2 * * *'"),
+):
+    """Register auto-collect in crontab."""
+    import subprocess
+
+    project_dir = _find_project_dir()
+    script = f"{project_dir}/scripts/auto-collect.sh"
+
+    if not Path(script).exists():
+        console.print(f"[red]Script not found: {script}[/red]")
+        raise typer.Exit(1)
+
+    # Build cron expression
+    if interval == "hourly":
+        cron_expr = "0 * * * *"
+    elif interval == "daily":
+        cron_expr = "0 9 * * *"
+    else:
+        cron_expr = interval
+
+    cron_line = f'{cron_expr} {script} # {_CRON_TAG}'
+
+    # Read current crontab
+    try:
+        result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+        existing = result.stdout if result.returncode == 0 else ""
+    except FileNotFoundError:
+        existing = ""
+
+    # Remove old snshack entries
+    lines = [l for l in existing.splitlines() if _CRON_TAG not in l]
+    lines.append(cron_line)
+
+    # Write new crontab
+    new_crontab = "\n".join(lines) + "\n"
+    proc = subprocess.run(["crontab", "-"], input=new_crontab, capture_output=True, text=True)
+    if proc.returncode != 0:
+        console.print(f"[red]Failed to set crontab: {proc.stderr}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[green]Cron registered:[/green] {cron_line}")
+    console.print(f"  Logs: {project_dir}/logs/")
+
+
+@cron_app.command("status")
+def cron_status():
+    """Show current cron entries for snshack."""
+    import subprocess
+
+    try:
+        result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+        if result.returncode != 0:
+            console.print("[yellow]No crontab configured.[/yellow]")
+            return
+    except FileNotFoundError:
+        console.print("[red]crontab not available.[/red]")
+        return
+
+    entries = [l for l in result.stdout.splitlines() if _CRON_TAG in l]
+    if not entries:
+        console.print("[yellow]No snshack cron entries found.[/yellow] Run 'snshack cron setup'")
+        return
+
+    for entry in entries:
+        console.print(f"  {entry}")
+
+
+@cron_app.command("remove")
+def cron_remove():
+    """Remove snshack entries from crontab."""
+    import subprocess
+
+    try:
+        result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+        if result.returncode != 0:
+            console.print("[yellow]No crontab configured.[/yellow]")
+            return
+    except FileNotFoundError:
+        console.print("[red]crontab not available.[/red]")
+        return
+
+    lines = [l for l in result.stdout.splitlines() if _CRON_TAG not in l]
+    removed = len(result.stdout.splitlines()) - len(lines)
+
+    if removed == 0:
+        console.print("[yellow]No snshack entries found.[/yellow]")
+        return
+
+    new_crontab = "\n".join(lines) + "\n" if lines else ""
+    proc = subprocess.run(["crontab", "-"], input=new_crontab, capture_output=True, text=True)
+    if proc.returncode != 0:
+        console.print(f"[red]Failed to update crontab: {proc.stderr}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[green]Removed {removed} snshack cron entry(s).[/green]")
+
+
+@cron_app.command("logs")
+def cron_logs(
+    lines: int = typer.Option(50, "--lines", "-n", help="Number of lines to show"),
+    profile_name: str = typer.Option("", "--profile-name", help="Filter by profile"),
+):
+    """Show recent auto-collect logs."""
+    project_dir = Path(_find_project_dir())
+    log_dir = project_dir / "logs"
+
+    if not log_dir.exists():
+        console.print("[yellow]No logs yet.[/yellow]")
+        return
+
+    # Find log files, newest first
+    pattern = f"collect_{profile_name}*" if profile_name else "collect_*"
+    log_files = sorted(log_dir.glob(pattern), key=lambda f: f.stat().st_mtime, reverse=True)
+
+    if not log_files:
+        console.print("[yellow]No log files found.[/yellow]")
+        return
+
+    shown = 0
+    for lf in log_files:
+        if shown >= lines:
+            break
+        content = lf.read_text(encoding="utf-8", errors="replace").strip()
+        if content:
+            console.print(f"[dim]--- {lf.name} ---[/dim]")
+            for line in content.splitlines():
+                console.print(f"  {line}")
+                shown += 1
+                if shown >= lines:
+                    break
 
 
 if __name__ == "__main__":

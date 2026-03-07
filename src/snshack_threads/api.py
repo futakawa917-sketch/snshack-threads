@@ -27,8 +27,8 @@ class MetricoolClient:
     Endpoints discovered from the official mcp-metricool project.
     """
 
-    def __init__(self, settings: Settings | None = None) -> None:
-        self._settings = settings or get_settings()
+    def __init__(self, settings: Settings | None = None, profile: str | None = None) -> None:
+        self._settings = settings or get_settings(profile=profile)
         if not self._settings.validate_credentials():
             raise MetricoolAPIError(
                 "Missing credentials. Set METRICOOL_USER_TOKEN, METRICOOL_USER_ID, and METRICOOL_BLOG_ID."

@@ -18,6 +18,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+ai = [
+    "anthropic>=0.40,<1",
+]
+scraper = [
+    "playwright>=1.40,<2",
+]
 dev = [
     "pytest>=8.0,<9",
     "pytest-asyncio>=0.24,<1",
