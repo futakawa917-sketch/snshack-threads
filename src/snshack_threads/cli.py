@@ -503,6 +503,193 @@ def research(
                 console.print(f"    - {gap}")
 
 
+# ── post performance tracking ─────────────────────────────────
+
+@app.command()
+def collect(
+    min_age: int = typer.Option(24, help="Minimum hours since scheduled (default 24)"),
+):
+    """Collect performance data (views, likes) for published posts.
+
+    Fetches metrics from Metricool API for posts that were scheduled
+    at least --min-age hours ago. Run this daily to build up view data.
+
+    Example:
+      snshack collect           # collect for posts 24h+ old
+      snshack collect --min-age 48  # only posts 48h+ old
+    """
+    from .post_history import PostHistory, collect_performance
+
+    history = PostHistory()
+
+    if history.count == 0:
+        console.print("[yellow]No posts in history yet.[/yellow] Schedule posts first.")
+        return
+
+    pending = history.get_pending_collection(min_age_hours=min_age)
+    if not pending:
+        console.print("[green]All posts already collected.[/green] No pending posts.")
+        return
+
+    console.print(f"Collecting metrics for {len(pending)} posts...")
+
+    with _get_client() as client:
+        updated = collect_performance(history, client, min_age_hours=min_age)
+
+    if updated:
+        console.print(f"[green]Updated {len(updated)} posts with performance data:[/green]")
+        for r in updated:
+            console.print(f"  {r.views:>6,} views | {r.likes:>3} likes | {r.text[:40]}...")
+    else:
+        console.print("[yellow]No matching posts found in Metricool.[/yellow]")
+        console.print("Posts may not have been published yet, or text didn't match.")
+
+
+@app.command()
+def review(
+    days: int = typer.Option(30, help="Number of days to look back"),
+    sort_by: str = typer.Option("date", help="Sort by: date, views, likes, engagement"),
+):
+    """Review post performance with views and engagement.
+
+    Shows all tracked posts with their performance metrics.
+    Use 'snshack collect' first to fetch latest metrics.
+
+    Example:
+      snshack review                # last 30 days, sorted by date
+      snshack review --sort-by views  # sort by views
+    """
+    from .post_history import PostHistory
+
+    history = PostHistory()
+    records = history.get_recent(days=days)
+
+    if not records:
+        console.print("[yellow]No posts found.[/yellow]")
+        if history.count == 0:
+            console.print("Schedule posts with 'snshack schedule-day' to start tracking.")
+        return
+
+    # Sort
+    if sort_by == "views":
+        records.sort(key=lambda r: r.views, reverse=True)
+    elif sort_by == "likes":
+        records.sort(key=lambda r: r.likes, reverse=True)
+    elif sort_by == "engagement":
+        records.sort(key=lambda r: r.engagement, reverse=True)
+    else:
+        records.sort(key=lambda r: r.scheduled_at, reverse=True)
+
+    table = Table(title=f"Post Performance (last {days} days)")
+    table.add_column("Date", style="dim")
+    table.add_column("Text", max_width=40)
+    table.add_column("Views", justify="right")
+    table.add_column("Likes", justify="right")
+    table.add_column("Replies", justify="right")
+    table.add_column("Eng.%", justify="right")
+    table.add_column("Status", justify="center")
+
+    total_views = 0
+    total_likes = 0
+    collected_count = 0
+
+    for r in records:
+        try:
+            dt = datetime.fromisoformat(r.scheduled_at)
+            date_str = dt.strftime("%m/%d %H:%M")
+        except ValueError:
+            date_str = "-"
+
+        status_style = "green" if r.has_metrics else "yellow"
+        status_text = "collected" if r.has_metrics else "pending"
+
+        eng_str = f"{r.engagement * 100:.1f}%" if r.engagement else "-"
+
+        table.add_row(
+            date_str,
+            r.text[:40],
+            f"{r.views:,}" if r.has_metrics else "-",
+            f"{r.likes:,}" if r.has_metrics else "-",
+            f"{r.replies:,}" if r.has_metrics else "-",
+            eng_str,
+            f"[{status_style}]{status_text}[/{status_style}]",
+        )
+
+        if r.has_metrics:
+            total_views += r.views
+            total_likes += r.likes
+            collected_count += 1
+
+    console.print(table)
+
+    # Summary
+    if collected_count > 0:
+        console.print()
+        console.print(f"[bold]Summary:[/bold] {collected_count}/{len(records)} posts collected")
+        console.print(f"  Total views: {total_views:,} | Avg: {total_views // collected_count:,}/post")
+        console.print(f"  Total likes: {total_likes:,} | Avg: {total_likes / collected_count:.1f}/post")
+
+    uncollected = len(records) - collected_count
+    if uncollected > 0:
+        console.print()
+        console.print(f"[yellow]{uncollected} posts still pending.[/yellow] Run 'snshack collect' to fetch metrics.")
+
+
+@app.command()
+def refresh_csv(
+    csv_file: str = typer.Option(None, "--csv", "-c", help="Path to new CSV file"),
+):
+    """Refresh analytics by importing updated CSV data.
+
+    Re-analyzes your Threads CSV export to update optimal posting times.
+    Export your latest CSV from Threads analytics and provide the path.
+
+    Steps:
+      1. Go to Threads > Professional Dashboard > Export Data
+      2. Download the CSV file
+      3. Run: snshack refresh-csv --csv /path/to/new-export.csv
+    """
+    from .csv_analyzer import analyze_optimal_times
+    from .scheduler import _resolve_csv_path
+
+    resolved = _resolve_csv_path(csv_file)
+    if resolved is None:
+        console.print("[red]CSV file not found.[/red]")
+        console.print("Export your latest data from Threads and provide the path:")
+        console.print("  snshack refresh-csv --csv /path/to/スレッズ.csv")
+        raise typer.Exit(1)
+
+    result = analyze_optimal_times(resolved)
+
+    console.print(f"[green]CSV loaded:[/green] {result.total_posts} posts analyzed from {resolved.name}")
+    console.print()
+
+    # Show updated optimal times
+    optimal = result.get_optimal_slots(n=5)
+    console.print("[bold]Updated optimal posting times:[/bold]")
+    for h, m in optimal:
+        hs = result.hour_stats[h]
+        console.print(f"  {h:02d}:{m:02d}  ({hs.post_count} posts, avg {hs.avg_views:,.0f} views)")
+
+    # Show day-of-week breakdown
+    console.print()
+    console.print("[bold]Day-of-week best slots:[/bold]")
+    for d in range(7):
+        slots = result.get_optimal_slots_for_day(d, n=3)
+        times = ", ".join(f"{h:02d}:{m:02d}" for h, m in slots)
+        console.print(f"  {_DOW_NAMES[d]}: {times}")
+
+    # Content insights summary
+    cp = result.content
+    if cp.no_link_post_avg_views > 0:
+        console.print()
+        console.print(f"[bold]Avg views:[/bold] {cp.no_link_post_avg_views:,.0f} (without links)")
+        if cp.link_post_avg_views > 0:
+            penalty = (1 - cp.link_post_avg_views / cp.no_link_post_avg_views) * 100
+            if penalty > 0:
+                console.print(f"  [red]Link penalty: -{penalty:.0f}% views[/red]")
+
+
 # ── analytics ────────────────────────────────────────────────
 
 @app.command()

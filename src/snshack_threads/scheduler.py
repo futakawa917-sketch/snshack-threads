@@ -17,6 +17,7 @@ from .config import Settings, get_settings
 from .content_guard import check_ng
 from .csv_analyzer import analyze_optimal_times
 from .models import DailySchedule, PostDraft, ScheduleSlot
+from .post_history import PostHistory
 
 # Fallback CSV location (repo root) when THREADS_CSV_PATH is not set
 _REPO_ROOT_CSV = Path(__file__).resolve().parent.parent.parent / "スレッズ.csv"
@@ -97,16 +98,21 @@ def schedule_posts_for_day(
     drafts: list[PostDraft],
     date: datetime,
     schedule: DailySchedule | None = None,
+    history: PostHistory | None = None,
 ) -> list[dict[str, Any]]:
     """Schedule multiple posts for a single day at optimal time slots.
 
     Uses day-of-week specific optimal times when schedule is not provided.
     Validates all drafts against NG rules before scheduling.
+    Records each post in history for later performance tracking.
     """
     validate_drafts(drafts)
 
     if schedule is None:
         schedule = get_optimal_schedule(day_of_week=date.weekday())
+
+    if history is None:
+        history = PostHistory()
 
     results: list[dict[str, Any]] = []
     for i, draft in enumerate(drafts):
@@ -118,6 +124,13 @@ def schedule_posts_for_day(
         )
         result = client.schedule_post(draft, publish_at)
         results.append(result)
+
+        # Record in history for performance tracking
+        history.record_scheduled(
+            text=draft.text,
+            publish_at=publish_at,
+            metricool_response=result,
+        )
 
     return results
 
