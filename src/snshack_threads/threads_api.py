@@ -6,6 +6,7 @@ Requires: threads_basic + threads_keyword_search permissions.
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime
 from typing import Any
@@ -60,7 +61,7 @@ class ThreadsGraphClient:
             raise ThreadsAPIError(resp.text, status_code=resp.status_code)
         try:
             return resp.json()
-        except (ValueError, Exception):
+        except (ValueError, json.JSONDecodeError):
             raise ThreadsAPIError(
                 f"Invalid JSON response: {resp.text[:200]}",
                 status_code=resp.status_code,

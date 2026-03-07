@@ -149,7 +149,7 @@ def schedule_posts_for_day(
         )
         try:
             result = client.schedule_post(draft, publish_at)
-        except (MetricoolAPIError, Exception) as e:
+        except MetricoolAPIError as e:
             logger.warning("Failed to schedule post %d: %s", i + 1, e)
             errors.append((i + 1, str(e)))
             continue
