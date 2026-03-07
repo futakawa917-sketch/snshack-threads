@@ -92,6 +92,7 @@ def schedule(
     text: str = typer.Argument(help="Post text (max 500 chars)"),
     at: str = typer.Option(help="Publish time (YYYY-MM-DD HH:MM)"),
     add_cta: bool = typer.Option(False, "--cta", help="Append engagement CTA"),
+    first_comment: str = typer.Option("", "--comment", help="First comment for engagement velocity"),
 ):
     """Schedule a single Threads post via Metricool."""
     from .content_guard import append_cta, check_ng
@@ -109,7 +110,7 @@ def schedule(
         text = append_cta(text)
 
     publish_at = datetime.strptime(at, "%Y-%m-%d %H:%M")
-    draft = PostDraft(text=text)
+    draft = PostDraft(text=text, first_comment=first_comment)
 
     with _get_client() as client:
         result = client.schedule_post(draft, publish_at)
@@ -189,6 +190,129 @@ def schedule_day(
     for i, _result in enumerate(results):
         slot = schedule.slots[i]
         console.print(f"  {slot.hour:02d}:{slot.minute:02d} - {all_texts[i][:60]}")
+
+
+@app.command()
+def schedule_thread(
+    file: str = typer.Option(..., "--file", "-f", help="File with thread posts (one per line, --- separator)"),
+    at: str = typer.Option(..., help="Publish time (YYYY-MM-DD HH:MM)"),
+    first_comment: str = typer.Option("", "--comment", help="First comment for engagement boost"),
+    add_cta: bool = typer.Option(False, "--cta", help="Append engagement CTA to last post"),
+):
+    """Schedule a thread chain (connected posts).
+
+    Each post in the chain gets its own algorithmic distribution.
+    Great for step-by-step guides and listicles.
+
+    File format: one post per section, separated by '---':
+      補助金申請の5ステップ
+      ---
+      ステップ1: 対象確認
+      ---
+      ステップ2: 書類準備
+
+    Example:
+      snshack schedule-thread -f thread.txt --at "2026-03-10 09:00" --comment "どのステップが一番大変でしたか？"
+    """
+    from pathlib import Path
+
+    from .content_guard import append_cta, check_ng
+    from .models import PostDraft, ThreadDraft
+    from .post_history import PostHistory
+
+    raw = Path(file).read_text(encoding="utf-8")
+    sections = [s.strip() for s in raw.split("---") if s.strip()]
+
+    if len(sections) < 2:
+        console.print("[red]Thread requires at least 2 posts.[/red] Separate with '---'")
+        raise typer.Exit(1)
+
+    if len(sections) > 10:
+        console.print("[yellow]Warning:[/yellow] Max 10 posts per thread, truncating.")
+        sections = sections[:10]
+
+    # NG check all sections
+    for i, text in enumerate(sections):
+        violations = check_ng(text)
+        if violations:
+            console.print(f"[red]Post {i + 1} NG:[/red] {', '.join(violations)}")
+            raise typer.Exit(1)
+
+    if add_cta:
+        sections[-1] = append_cta(sections[-1])
+
+    drafts = [PostDraft(text=t) for t in sections]
+    thread = ThreadDraft(posts=drafts, first_comment=first_comment)
+
+    publish_at = datetime.strptime(at, "%Y-%m-%d %H:%M")
+
+    with _get_client() as client:
+        result = client.schedule_thread(thread, publish_at)
+
+    PostHistory().record_scheduled(
+        text=f"[THREAD {len(sections)}posts] {sections[0][:80]}",
+        publish_at=publish_at,
+        metricool_response=result,
+    )
+
+    console.print(f"[green]Thread scheduled![/green] {len(sections)} posts at {publish_at}")
+    for i, text in enumerate(sections):
+        label = "Main" if i == 0 else f"  +{i}"
+        console.print(f"  {label}: {text[:60]}")
+    if first_comment:
+        console.print(f"  [dim]First comment: {first_comment[:60]}[/dim]")
+
+
+@app.command()
+def recycle(
+    top: int = typer.Option(5, help="Number of top posts to show"),
+    min_age: int = typer.Option(30, help="Minimum age in days"),
+):
+    """Find top-performing posts eligible for recycling.
+
+    Shows your best posts from 30+ days ago with suggested
+    new hook patterns for repurposing.
+
+    Example:
+      snshack recycle            # show top 5 recyclable posts
+      snshack recycle --top 10   # show top 10
+    """
+    from .content_recycler import find_recyclable_posts, suggest_recycle
+    from .post_history import PostHistory
+
+    history = PostHistory()
+    candidates = find_recyclable_posts(history, min_age_days=min_age, top_n=top)
+
+    if not candidates:
+        console.print("[yellow]No recyclable posts found.[/yellow]")
+        if history.count == 0:
+            console.print("Schedule and collect post metrics first.")
+        else:
+            console.print(f"No collected posts older than {min_age} days.")
+        return
+
+    table = Table(title=f"Recyclable Posts (>{min_age} days old)")
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("Text", max_width=40)
+    table.add_column("Views", justify="right")
+    table.add_column("Likes", justify="right")
+    table.add_column("Hooks Used")
+    table.add_column("Suggested Hooks")
+
+    for i, record in enumerate(candidates, 1):
+        info = suggest_recycle(record)
+        table.add_row(
+            str(i),
+            record.text[:40],
+            f"{record.views:,}",
+            f"{record.likes:,}",
+            ", ".join(info["original_hooks"]) if info["original_hooks"] else "-",
+            ", ".join(info["suggested_hooks"]),
+        )
+
+    console.print(table)
+    console.print()
+    console.print("[dim]Tip: Rewrite top posts with a different hook pattern for fresh reach.[/dim]")
 
 
 @app.command()
@@ -728,6 +852,17 @@ def analytics(
     if report.followers_count:
         delta = f"+{report.delta_followers}" if report.delta_followers >= 0 else str(report.delta_followers)
         console.print(f"  Followers:      {report.followers_count:,} ({delta})")
+    console.print()
+
+    # Virality metrics
+    console.print("[bold]Virality Metrics[/bold]")
+    console.print(f"  Virality rate:      {report.virality_rate * 100:.2f}% (reposts+quotes / views)")
+    console.print(f"  Discussion rate:    {report.discussion_rate:.2f} (replies / likes)")
+    console.print(f"  Amplification rate: {report.amplification_rate:.2f} (reposts / likes)")
+    if report.virality_rate > 0.02:
+        console.print("  [green]Virality rate > 2% — content is spreading well[/green]")
+    elif report.virality_rate > 0:
+        console.print("  [yellow]Virality rate < 2% — focus on share-worthy content[/yellow]")
     console.print()
 
     if report.top_posts:

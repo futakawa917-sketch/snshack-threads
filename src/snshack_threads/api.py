@@ -10,7 +10,7 @@ from urllib.parse import quote
 import httpx
 
 from .config import Settings, get_settings
-from .models import Brand, PostDraft, ThreadsAccountMetrics, ThreadsPost
+from .models import Brand, PostDraft, ThreadDraft, ThreadsAccountMetrics, ThreadsPost
 
 
 class MetricoolAPIError(Exception):
@@ -180,7 +180,7 @@ class MetricoolClient:
             "autoPublish": True,
             "descendants": [],
             "draft": False,
-            "firstCommentText": "",
+            "firstCommentText": draft.first_comment,
             "hasNotReadNotes": False,
             "media": [],
             "mediaAltText": [],
@@ -192,6 +192,56 @@ class MetricoolClient:
             "shortener": False,
             "smartLinkData": {"ids": []},
             "text": draft.text,
+            "threadsData": {},
+        }
+
+        return self._post(
+            "/v2/scheduler/posts",
+            data=post_data,
+        )
+
+    def schedule_thread(
+        self,
+        thread: ThreadDraft,
+        publish_at: datetime,
+    ) -> dict[str, Any]:
+        """Schedule a thread chain (connected posts) via Metricool.
+
+        Each post in the chain gets its own algorithmic distribution.
+        Great for step-by-step guides, listicles, and deep dives.
+
+        Args:
+            thread: Thread draft with main post + chain posts.
+            publish_at: When to publish.
+        """
+        tz = self._settings.timezone
+        dt_str = publish_at.strftime("%Y-%m-%dT%H:%M:%S")
+
+        descendants = [
+            {
+                "text": p.text,
+                "media": [],
+                "mediaAltText": [],
+            }
+            for p in thread.chain_posts
+        ]
+
+        post_data = {
+            "autoPublish": True,
+            "descendants": descendants,
+            "draft": False,
+            "firstCommentText": thread.first_comment,
+            "hasNotReadNotes": False,
+            "media": [],
+            "mediaAltText": [],
+            "providers": [{"network": "threads"}],
+            "publicationDate": {
+                "dateTime": dt_str,
+                "timezone": tz,
+            },
+            "shortener": False,
+            "smartLinkData": {"ids": []},
+            "text": thread.main_post.text,
             "threadsData": {},
         }
 

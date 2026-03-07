@@ -31,6 +31,11 @@ class AnalyticsReport:
     followers_count: int = 0
     delta_followers: int = 0
 
+    # Virality metrics
+    virality_rate: float = 0.0  # (reposts + quotes) / views
+    discussion_rate: float = 0.0  # replies / (likes + 1)
+    amplification_rate: float = 0.0  # reposts / (likes + 1)
+
     @property
     def avg_engagement_rate_pct(self) -> str:
         return f"{self.avg_engagement_rate * 100:.2f}%"
@@ -77,6 +82,11 @@ def generate_report(
     except MetricoolAPIError as e:
         logger.warning("Failed to fetch account metrics: %s", e)
 
+    # Virality metrics
+    virality_rate = (total_reposts + total_quotes) / total_views if total_views else 0.0
+    discussion_rate = total_replies / (total_likes + 1)
+    amplification_rate = total_reposts / (total_likes + 1)
+
     return AnalyticsReport(
         period_start=start,
         period_end=end,
@@ -91,4 +101,7 @@ def generate_report(
         top_posts=top_posts,
         followers_count=followers_count,
         delta_followers=delta_followers,
+        virality_rate=virality_rate,
+        discussion_rate=discussion_rate,
+        amplification_rate=amplification_rate,
     )

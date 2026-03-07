@@ -213,12 +213,20 @@ def parse_csv(csv_path: str | Path) -> list[dict]:
 # ── Hook Pattern Detection ───────────────────────────────────
 
 _HOOK_PATTERNS: list[tuple[str, re.Pattern]] = [
+    # Original 6 patterns
     ("数字訴求", re.compile(r"[\d,]+[万億円%]|最大|[0-9]{2,}")),
     ("疑問形", re.compile(r"[？\?]|知ってた|ですか")),
     ("危機感", re.compile(r"やばい|ヤバい|危険|損|知らない|放置|倒産|リスク")),
     ("限定感", re.compile(r"今だけ|いよいよ|緊急|速報|激アツ|到来")),
     ("断言", re.compile(r"です[。\n]|ください|べき|一択|必見")),
     ("呼びかけ", re.compile(r"必見|オーナー|社長|経営者|あなた")),
+    # Added patterns for broader content diversity
+    ("共感", re.compile(r"あるある|わかる|共感|それな|ほんと")),
+    ("対比", re.compile(r"実は|逆に|一方で|でも実際|思いきや")),
+    ("裏技", re.compile(r"コツ|秘訣|裏技|裏ワザ|知る人ぞ知る|プロが")),
+    ("実体験", re.compile(r"やってみた|結果|実際に|体験|経験談")),
+    ("ランキング", re.compile(r"TOP|ランキング|第[0-9]位|ベスト|ワースト|選$")),
+    ("議論喚起", re.compile(r"どう思う|賛否|議論|意見|反論|正直")),
 ]
 
 

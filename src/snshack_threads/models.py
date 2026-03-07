@@ -54,6 +54,27 @@ class PostDraft(BaseModel):
     media_type: MediaType = MediaType.TEXT
     media_ids: list[str] = Field(default_factory=list)
     reply_control: ReplyControl = ReplyControl.EVERYONE
+    first_comment: str = Field(default="", max_length=500)
+
+
+class ThreadDraft(BaseModel):
+    """Draft for a thread chain (multiple connected posts).
+
+    The first item is the main post; subsequent items become
+    descendants (replies in the thread chain). Each reply gets
+    its own algorithmic distribution chance.
+    """
+
+    posts: list[PostDraft] = Field(min_length=1, max_length=10)
+    first_comment: str = Field(default="", max_length=500)
+
+    @property
+    def main_post(self) -> PostDraft:
+        return self.posts[0]
+
+    @property
+    def chain_posts(self) -> list[PostDraft]:
+        return self.posts[1:]
 
 
 class ScheduleSlot(BaseModel):
