@@ -257,38 +257,61 @@ def generate_daily_plan(
     # Generate posts
     generated_posts = []
 
-    # Fresh posts
+    # Fresh posts — mix of reach and list types
+    # Based on data: reach (超短文) for views, list (質問CTA) for engagement/followers
     n_fresh = posts_per_day - n_recycle
-    # Use short_post_ratio from settings for ALL phases
-    short_ratio = settings.short_post_ratio
-    n_short = max(0, round(n_fresh * short_ratio))
-    short_indices = set(random.sample(range(n_fresh), min(n_short, n_fresh))) if n_short > 0 else set()
+
+    # Post type allocation: 3 reach + 2 list (or proportional)
+    n_list = max(1, round(n_fresh * 0.4))  # 40% list acquisition
+    n_reach_short = max(1, round((n_fresh - n_list) * 0.6))  # 60% of reach = short
+    n_reach_medium = n_fresh - n_list - n_reach_short  # Rest = medium
+
+    # Assign types to indices
+    post_types: list[str] = []
+    post_types.extend(["reach_short"] * n_reach_short)
+    post_types.extend(["list"] * n_list)
+    post_types.extend(["reach_medium"] * n_reach_medium)
+    random.shuffle(post_types)  # Randomize order
 
     for i in range(n_fresh):
         hook = hooks[i] if i < len(hooks) else random.choice(all_hook_names)
         topic = topics[i % len(topics)] if topics else settings.get_research_keywords()[0] if settings.get_research_keywords() else "today's topic"
-        is_short = i in short_indices
+        p_type = post_types[i] if i < len(post_types) else "reach_short"
 
         try:
-            # Use template if available in optimized phase
-            if phase == "optimized" and hook in templates:
-                tmpl = templates[hook]
-                from .content_generator import generate_from_template
-                post = generate_from_template(
+            if p_type == "list":
+                from .content_generator import generate_list_post
+                post = generate_list_post(
                     topic=topic,
-                    hook_type=hook,
-                    example_posts=tmpl.example_posts,
-                    best_length=tmpl.best_length_bucket,
+                    news_context=news_context if news_context else None,
+                    style_guide=style_guide,
                 )
-            else:
-                post = generate_post(
+            elif p_type == "reach_short":
+                from .content_generator import generate_reach_post
+                post = generate_reach_post(
                     topic=topic,
                     hook_type=hook,
                     news_context=news_context if news_context else None,
-                    reference_posts=ref_post_texts if ref_post_texts else None,
                     style_guide=style_guide,
-                    short=is_short,
                 )
+            else:  # reach_medium or template
+                if phase == "optimized" and hook in templates:
+                    tmpl = templates[hook]
+                    from .content_generator import generate_from_template
+                    post = generate_from_template(
+                        topic=topic,
+                        hook_type=hook,
+                        example_posts=tmpl.example_posts,
+                        best_length=tmpl.best_length_bucket,
+                    )
+                else:
+                    from .content_generator import generate_medium_post
+                    post = generate_medium_post(
+                        topic=topic,
+                        hook_type=hook,
+                        news_context=news_context if news_context else None,
+                        style_guide=style_guide,
+                    )
 
             # NG check
             issues = check_ng(post.text)

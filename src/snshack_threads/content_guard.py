@@ -18,9 +18,9 @@ _NG_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("URL", re.compile(r"https?://\S+")),
     ("LINE誘導", re.compile(r"LINE|ライン公式|ライン登録|LINE@|公式LINE")),
     ("プロフリンク誘導", re.compile(r"(プロフ|概要欄).*(リンク|URL|見て|飛んで|チェック)")),
-    ("固定投稿誘導", re.compile(r"固定.*(投稿|ポスト|見て|チェック)")),
     ("外部誘導", re.compile(r"(リンク|URL).*(貼って|載せて|プロフ|概要)")),
-    ("DM誘導", re.compile(r"DM.*(ください|してね|送って|待って)")),
+    # Note: DM誘導 and 固定投稿誘導 are NOT NG — they are valid list acquisition CTAs
+    # Data shows DM誘導 = 平均16,898 views, 質問CTA = 平均60,091 views
 ]
 
 
@@ -110,9 +110,12 @@ def append_cta(text: str, cta: str | None = None) -> str:
         else:
             cta = suggest_cta()
 
-    # Don't add if text already has a CTA-like ending
+    # Don't add if text already has a CTA-like ending (including list acquisition CTAs)
     last_line = text.strip().split("\n")[-1]
-    if any(word in last_line for word in ["コメント", "保存", "フォロー", "いいね", "リポスト", "教えて"]):
+    if any(word in last_line for word in [
+        "コメント", "保存", "フォロー", "いいね", "リポスト", "教えて",
+        "いますか", "DM", "連絡", "ください", "知ってた",
+    ]):
         return text
 
     result = f"{text.rstrip()}\n\n{cta}"
