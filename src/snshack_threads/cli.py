@@ -2790,43 +2790,43 @@ def threads_refresh_token(
     force: bool = typer.Option(False, "--force", help="Force refresh even if not expiring soon"),
 ):
     """Refresh Threads API long-lived token (60-day tokens)."""
-    from .threads_api import get_token_info, refresh_long_lived_token
+    from .threads_api import ThreadsGraphClient
 
     settings = _get_settings()
+    if not settings.threads_access_token:
+        console.print("[red]No Threads access token configured.[/red]")
+        return
 
     # Show current token info
     console.print("[bold]Current token status:[/bold]")
-    info = get_token_info(settings)
-    if info:
-        console.print(f"  App ID: {info.get('app_id', 'N/A')}")
-        expires = info.get("expires_at")
-        if expires:
-            exp_dt = datetime.fromtimestamp(expires)
-            days_left = (exp_dt - datetime.now()).days
-            color = "green" if days_left > 14 else "yellow" if days_left > 7 else "red"
-            console.print(f"  Expires: {exp_dt:%Y-%m-%d} ([{color}]{days_left} days left[/{color}])")
+    try:
+        with ThreadsGraphClient() as client:
+            info = client.get_token_info()
+            expires = info.get("expires_at")
+            if expires:
+                exp_dt = datetime.fromtimestamp(expires)
+                days_left = (exp_dt - datetime.now()).days
+                color = "green" if days_left > 14 else "yellow" if days_left > 7 else "red"
+                console.print(f"  Expires: {exp_dt:%Y-%m-%d} ([{color}]{days_left} days left[/{color}])")
 
-            if days_left > 14 and not force:
-                console.print("[green]Token is still valid. Use --force to refresh anyway.[/green]")
-                return
-        else:
-            console.print("  [yellow]Could not determine expiry[/yellow]")
-    else:
-        console.print("  [yellow]Could not fetch token info[/yellow]")
+                if days_left > 14 and not force:
+                    console.print("[green]Token is still valid. Use --force to refresh anyway.[/green]")
+                    return
+            else:
+                console.print("  [yellow]Could not determine expiry[/yellow]")
 
-    # Refresh
-    console.print("\n[bold]Refreshing token...[/bold]")
-    new_token = refresh_long_lived_token(settings)
-    if new_token:
-        console.print("[green]Token refreshed successfully![/green]")
-        # Show new expiry
-        new_info = get_token_info(settings)
-        if new_info and new_info.get("expires_at"):
-            exp_dt = datetime.fromtimestamp(new_info["expires_at"])
-            days_left = (exp_dt - datetime.now()).days
-            console.print(f"  New expiry: {exp_dt:%Y-%m-%d} ({days_left} days)")
-    else:
-        console.print("[red]Token refresh failed. Check your token and settings.[/red]")
+            # Refresh
+            console.print("\n[bold]Refreshing token...[/bold]")
+            result = client.refresh_long_lived_token()
+            if result.get("access_token"):
+                console.print("[green]Token refreshed successfully![/green]")
+                expires_in = result.get("expires_in", 0)
+                if expires_in:
+                    console.print(f"  Valid for {expires_in // 86400} days")
+            else:
+                console.print("[red]Token refresh failed.[/red]")
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
 
 
 # ── Notifications ─────────────────────────────────────────

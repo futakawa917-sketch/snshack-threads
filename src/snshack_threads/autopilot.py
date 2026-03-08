@@ -342,6 +342,7 @@ def generate_daily_plan(
                 "hook": hook,
                 "source": post.source,
                 "topic": topic,
+                "post_type": getattr(post, "post_type", "reach"),
             })
 
         except Exception as e:
@@ -435,8 +436,10 @@ def execute_plan(
         if last_post_time is not None:
             wait_min = publish_times[i] - publish_times[i - 1]
             wait_sec = max(wait_min * 60, MIN_INTERVAL_MIN * 60)
+            print(f"  ⏳ 次の投稿まで {wait_sec // 60} 分待機中...", flush=True)
             logger.info("Waiting %d minutes before next post...", wait_sec // 60)
             _time.sleep(wait_sec)
+            print(f"  ✓ 待機完了、投稿 {i + 1} を実行", flush=True)
 
         last_post_time = publish_times[i]
 
@@ -454,8 +457,11 @@ def execute_plan(
                 from .threads_api import ThreadsGraphClient
                 with ThreadsGraphClient() as client:
                     post_id = client.create_text_post(text)
-                    history.record_scheduled(text=text, publish_at=publish_at)
-                    results.append(f"Published: {post_data['hook']} at {slot.hour}:{slot.minute:02d} (ID: {post_id})")
+                    history.record_scheduled(
+                        text=text, publish_at=publish_at,
+                        post_type=post_data.get("post_type", "reach"),
+                    )
+                    results.append(f"Published: {post_data['hook']} [{post_data.get('post_type', 'reach')}] at {hour_adj}:{base_minute:02d} (ID: {post_id})")
             except Exception as e:
                 results.append(f"Failed (threads): {post_data['hook']} - {e}")
         else:  # metricool
