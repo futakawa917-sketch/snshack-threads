@@ -329,30 +329,41 @@ def execute_plan(
 
     import time as _time
 
-    MIN_INTERVAL_SEC = 30 * 60  # 30 minutes between posts
+    MIN_INTERVAL_MIN = 30  # Minimum 30 minutes between posts
+
+    # Build publish times from data-driven slots with jitter, enforcing min interval
+    publish_times = []
+    for i, slot in enumerate(slots[:len(plan.posts)]):
+        jitter_minutes = random.randint(-15, 15)
+        total_min = slot.hour * 60 + slot.minute + jitter_minutes
+        total_min = max(0, min(23 * 60 + 59, total_min))
+
+        # Enforce minimum interval from previous post
+        if publish_times:
+            prev_min = publish_times[-1]
+            if total_min - prev_min < MIN_INTERVAL_MIN:
+                total_min = prev_min + MIN_INTERVAL_MIN
+
+        publish_times.append(total_min)
+
+    last_post_time = None
 
     for i, post_data in enumerate(plan.posts):
-        if i >= len(slots):
+        if i >= len(publish_times):
             results.append(f"Skipped (no slot): {post_data['hook']}")
             continue
 
-        # Wait 30 minutes between posts (skip wait for first post)
-        if i > 0:
-            logger.info("Waiting %d minutes before next post...", MIN_INTERVAL_SEC // 60)
-            _time.sleep(MIN_INTERVAL_SEC)
+        # Wait until scheduled time (relative to first post)
+        if last_post_time is not None:
+            wait_min = publish_times[i] - publish_times[i - 1]
+            wait_sec = max(wait_min * 60, MIN_INTERVAL_MIN * 60)
+            logger.info("Waiting %d minutes before next post...", wait_sec // 60)
+            _time.sleep(wait_sec)
 
-        slot = slots[i]
-        # Add random jitter (±15min) to avoid posting at exactly the same time daily
-        jitter_minutes = random.randint(-15, 15)
-        base_minute = slot.minute + jitter_minutes
-        hour_adj = slot.hour
-        if base_minute < 0:
-            base_minute += 60
-            hour_adj -= 1
-        elif base_minute >= 60:
-            base_minute -= 60
-            hour_adj += 1
-        hour_adj = max(0, min(23, hour_adj))
+        last_post_time = publish_times[i]
+
+        hour_adj = publish_times[i] // 60
+        base_minute = publish_times[i] % 60
 
         publish_at = target_date.replace(
             hour=hour_adj, minute=base_minute, second=0, microsecond=0
