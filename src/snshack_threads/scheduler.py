@@ -72,9 +72,24 @@ def get_optimal_schedule(
 
     Falls back to default fixed slots only if no CSV is available.
     """
+    import random as _random
+
     analysis = _get_analysis(csv_path)
     if analysis is None:
-        return DailySchedule()
+        # No data: generate random slots (7:00-22:00) with 30min minimum gap
+        min_gap = 30  # minutes
+        available_range = (7 * 60, 22 * 60)  # 7:00 - 22:00
+        slots = []
+        for _ in range(n_slots):
+            for _attempt in range(100):
+                total_min = _random.randint(available_range[0], available_range[1])
+                if all(abs(total_min - s) >= min_gap for s in slots):
+                    slots.append(total_min)
+                    break
+        slots.sort()
+        return DailySchedule(
+            slots=[ScheduleSlot(hour=m // 60, minute=m % 60) for m in slots]
+        )
 
     if day_of_week is not None:
         optimal = analysis.get_optimal_slots_for_day(day_of_week, n=n_slots)
