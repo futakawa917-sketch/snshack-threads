@@ -19,3 +19,7 @@ htmlcov/
 *.db
 *.sqlite3
 .streamlit/secrets.toml
+
+# Data directory (persisted by GitHub Actions)
+# config.json contains secrets — never commit
+data/*/config.json

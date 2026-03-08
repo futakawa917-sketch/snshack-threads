@@ -6,6 +6,9 @@ on:
     - cron: '0 22 * * *'
   workflow_dispatch: # 手動実行も可能
 
+permissions:
+  contents: write  # データファイルをコミットバックするため
+
 jobs:
   autopilot:
     runs-on: ubuntu-latest
@@ -28,6 +31,8 @@ jobs:
           THREADS_APP_ID: ${{ secrets.THREADS_APP_ID }}
           THREADS_APP_SECRET: ${{ secrets.THREADS_APP_SECRET }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          STYLE_GUIDE: ${{ secrets.STYLE_GUIDE }}
+          RESEARCH_KEYWORDS: ${{ secrets.RESEARCH_KEYWORDS }}
         run: |
           mkdir -p ~/.snshack-threads/profiles/default
           python3 -c "
@@ -38,23 +43,72 @@ jobs:
               'threads_app_id': os.environ['THREADS_APP_ID'],
               'threads_app_secret': os.environ['THREADS_APP_SECRET'],
               'anthropic_api_key': os.environ['ANTHROPIC_API_KEY'],
-              'research_keywords': '補助金,助成金,資金調達',
+              'research_keywords': os.environ.get('RESEARCH_KEYWORDS', '補助金,助成金,資金調達'),
+              'style_guide': os.environ.get('STYLE_GUIDE', '・丁寧語（です・ます調）で書くこと。タメ口は禁止。\n・専門家として信頼感のあるトーンで書く。\n・読者は中小企業の経営者や個人事業主。'),
+              'short_post_ratio': 0.5,
           }
           with open(os.path.expanduser('~/.snshack-threads/profiles/default/config.json'), 'w') as f:
               json.dump(config, f, ensure_ascii=False, indent=2)
           print('Profile config created')
           "
 
+      # ── Step 1: 過去データの復元 ──
+      - name: Restore persistent data
+        run: |
+          if [ -d "data/default" ]; then
+            echo "Restoring data from repo..."
+            cp -r data/default/* ~/.snshack-threads/profiles/default/ 2>/dev/null || true
+            echo "Restored files:"
+            ls -la ~/.snshack-threads/profiles/default/
+          else
+            echo "No previous data found (first run)"
+          fi
+
+      # ── Step 2: 投稿インポート & メトリクス収集 ──
+      - name: Import and collect metrics
+        run: |
+          echo "=== Importing posts from Threads API ==="
+          snshack threads import-posts -n 100 || echo "Import skipped"
+          echo ""
+          echo "=== Collecting performance metrics ==="
+          snshack collect-threads --min-age 6 || echo "Metrics collection skipped"
+          echo ""
+          echo "=== Performance summary ==="
+          snshack performance || echo "No performance data yet"
+
+      # ── Step 3: 自動投稿 ──
       - name: Run autopilot
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           snshack autopilot -t "補助金" -t "助成金" -t "資金調達" -t "創業支援" -t "事業再構築"
 
-      - name: Run auto-research (if available)
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      # ── Step 4: 競合リサーチ ──
+      - name: Run auto-research
         run: snshack auto-research || echo "Auto-research skipped (Advanced Access not yet available)"
 
+      # ── Step 5: トークン更新 ──
       - name: Refresh token
         run: snshack threads refresh-token || echo "Token refresh skipped"
+
+      # ── Step 6: データ永続化 (リポジトリにコミットバック) ──
+      - name: Persist data to repo
+        run: |
+          mkdir -p data/default/research
+          # Copy essential data files
+          cp ~/.snshack-threads/profiles/default/post_history.json data/default/ 2>/dev/null || true
+          cp ~/.snshack-threads/profiles/default/rate_limits.json data/default/ 2>/dev/null || true
+          cp -r ~/.snshack-threads/profiles/default/research/ data/default/research/ 2>/dev/null || true
+          # Don't persist config.json (contains secrets)
+
+          # Check if there are changes
+          git add data/
+          if git diff --staged --quiet; then
+            echo "No data changes to persist"
+          else
+            git config user.name "snshack-bot"
+            git config user.email "bot@snshack.dev"
+            git commit -m "autopilot: update data $(date -u +%Y-%m-%d)"
+            git push
+            echo "Data persisted to repo"
+          fi

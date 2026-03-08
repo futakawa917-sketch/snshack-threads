@@ -364,6 +364,200 @@ def collect_performance(
     return updated
 
 
+def collect_threads_metrics(
+    history: PostHistory,
+    min_age_hours: int = 24,
+) -> list[PostRecord]:
+    """Fetch performance data directly from Threads Graph API.
+
+    No Metricool dependency — uses official Threads API to:
+    1. Get our published posts
+    2. Match them with history records
+    3. Pull detailed insights (views, likes, replies, reposts, quotes)
+
+    Args:
+        history: Post history manager.
+        min_age_hours: Only collect for posts older than this.
+
+    Returns:
+        List of records that were updated with metrics.
+    """
+    from .threads_api import ThreadsGraphClient
+
+    pending = history.get_pending_collection(min_age_hours=min_age_hours)
+    if not pending:
+        logger.info("No pending posts to collect metrics for")
+        return []
+
+    updated: list[PostRecord] = []
+
+    try:
+        with ThreadsGraphClient() as client:
+            # Fetch our recent posts (up to 100)
+            my_posts = client.get_my_posts(limit=100)
+            logger.info("Fetched %d posts from Threads API", len(my_posts))
+
+            for record in pending:
+                record_text = record.text.strip()
+                matched_post = None
+
+                # Match by text content
+                for tp in my_posts:
+                    tp_text = (tp.get("text") or "").strip()
+                    if not tp_text or not record_text:
+                        continue
+
+                    # Exact match
+                    if record_text == tp_text:
+                        matched_post = tp
+                        break
+
+                    # Prefix match (CTA might be appended)
+                    if len(record_text) > 20 and (
+                        tp_text.startswith(record_text[:80])
+                        or record_text.startswith(tp_text[:80])
+                    ):
+                        matched_post = tp
+                        break
+
+                if not matched_post:
+                    continue
+
+                post_id = matched_post.get("id", "")
+                if not post_id:
+                    continue
+
+                # Get detailed insights
+                try:
+                    insights = client.get_post_insights(post_id)
+                    views = insights.get("views", 0)
+                    likes = insights.get("likes", matched_post.get("like_count", 0))
+                    replies = insights.get("replies", matched_post.get("reply_count", 0))
+                    reposts = insights.get("reposts", matched_post.get("repost_count", 0))
+                    quotes = insights.get("quotes", matched_post.get("quote_count", 0))
+
+                    total = likes + replies + reposts + quotes
+                    engagement = (total / views * 100) if views > 0 else 0.0
+
+                    history.update_metrics(
+                        record,
+                        views=views,
+                        likes=likes,
+                        replies=replies,
+                        reposts=reposts,
+                        quotes=quotes,
+                        engagement=engagement,
+                    )
+                    updated.append(record)
+                    logger.info(
+                        "Collected: %d views, %d likes — %s",
+                        views, likes, record.text[:40],
+                    )
+                except Exception as e:
+                    logger.warning("Failed to get insights for %s: %s", post_id, e)
+
+    except Exception as e:
+        logger.error("Failed to connect to Threads API: %s", e)
+
+    return updated
+
+
+def get_performance_summary(history: PostHistory) -> dict:
+    """Analyze performance data to feed into autopilot learning loop.
+
+    Returns a summary of what's working:
+    - Top hooks by views/engagement
+    - Best posting times
+    - Optimal post lengths
+    - Overall stats and milestone progress
+    """
+    from .csv_analyzer import _detect_hooks
+
+    collected = [r for r in history.get_all() if r.has_metrics]
+    if not collected:
+        return {"total_posts": history.count, "collected": 0}
+
+    # Hook performance
+    hook_stats: dict[str, dict] = {}
+    for record in collected:
+        hooks = _detect_hooks(record.text)
+        for hook in hooks:
+            if hook not in hook_stats:
+                hook_stats[hook] = {"views": [], "likes": [], "count": 0}
+            hook_stats[hook]["views"].append(record.views)
+            hook_stats[hook]["likes"].append(record.likes)
+            hook_stats[hook]["count"] += 1
+
+    hook_ranking = []
+    for hook, stats in hook_stats.items():
+        avg_views = sum(stats["views"]) / len(stats["views"])
+        avg_likes = sum(stats["likes"]) / len(stats["likes"])
+        hook_ranking.append({
+            "hook": hook,
+            "avg_views": round(avg_views, 1),
+            "avg_likes": round(avg_likes, 1),
+            "count": stats["count"],
+        })
+    hook_ranking.sort(key=lambda x: x["avg_views"], reverse=True)
+
+    # Time performance
+    time_stats: dict[int, dict] = {}
+    for record in collected:
+        try:
+            hour = datetime.fromisoformat(record.scheduled_at).hour
+        except ValueError:
+            continue
+        if hour not in time_stats:
+            time_stats[hour] = {"views": [], "count": 0}
+        time_stats[hour]["views"].append(record.views)
+        time_stats[hour]["count"] += 1
+
+    best_times = sorted(
+        [
+            {"hour": h, "avg_views": round(sum(s["views"]) / len(s["views"]), 1), "count": s["count"]}
+            for h, s in time_stats.items()
+            if s["count"] >= 2  # Need at least 2 samples
+        ],
+        key=lambda x: x["avg_views"],
+        reverse=True,
+    )
+
+    # Length performance
+    length_stats: dict[str, dict] = {}
+    for record in collected:
+        bucket = "short" if len(record.text) < 100 else "medium" if len(record.text) < 300 else "long"
+        if bucket not in length_stats:
+            length_stats[bucket] = {"views": [], "likes": [], "count": 0}
+        length_stats[bucket]["views"].append(record.views)
+        length_stats[bucket]["likes"].append(record.likes)
+        length_stats[bucket]["count"] += 1
+
+    length_ranking = {
+        bucket: {
+            "avg_views": round(sum(s["views"]) / len(s["views"]), 1),
+            "avg_likes": round(sum(s["likes"]) / len(s["likes"]), 1),
+            "count": s["count"],
+        }
+        for bucket, s in length_stats.items()
+    }
+
+    # Overall stats
+    all_views = [r.views for r in collected]
+    all_likes = [r.likes for r in collected]
+
+    return {
+        "total_posts": history.count,
+        "collected": len(collected),
+        "milestone_progress": f"{history.count}/100",
+        "avg_views": round(sum(all_views) / len(all_views), 1),
+        "avg_likes": round(sum(all_likes) / len(all_likes), 1),
+        "max_views": max(all_views),
+        "top_hooks": hook_ranking[:10],
+        "best_times": best_times[:5],
+        "length_performance": length_ranking,
+    }
+
+
 def _match_post(record: PostRecord, api_posts: list) -> Any | None:
     """Match a history record to an API post by text comparison.
 

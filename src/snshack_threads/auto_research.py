@@ -290,6 +290,63 @@ def run_auto_research(
     return report
 
 
+def run_self_analysis(profile: str | None = None) -> ResearchReport:
+    """Run self-analysis as fallback when keyword_search is unavailable.
+
+    Analyzes our own published posts to extract patterns:
+    - Which hooks got the most views/likes
+    - Which topics performed best
+    - What post lengths work
+    - Trending topics from our own data
+
+    This runs automatically when keyword_search fails.
+    """
+    from .csv_analyzer import _detect_hooks
+    from .post_history import PostHistory, get_performance_summary
+
+    report = ResearchReport(date=datetime.now().strftime("%Y-%m-%d"))
+    report.keywords_searched = ["[self-analysis]"]
+
+    history = PostHistory()
+    collected = [r for r in history.get_all() if r.has_metrics]
+
+    if len(collected) < 3:
+        report.errors.append(f"Not enough data for self-analysis ({len(collected)} posts)")
+        return report
+
+    report.total_posts_found = len(collected)
+
+    # Analyze hooks from our own posts
+    hook_data: dict[str, list[int]] = defaultdict(list)
+    for record in collected:
+        hooks = _detect_hooks(record.text)
+        for hook in hooks:
+            hook_data[hook].append(record.views)
+
+    for hook, views_list in sorted(
+        hook_data.items(), key=lambda x: sum(x[1]) / len(x[1]), reverse=True
+    ):
+        report.trending_hooks.append({
+            "hook": hook,
+            "count": len(views_list),
+            "avg_likes": round(sum(views_list) / len(views_list), 1),  # Using views as proxy
+            "total_likes": sum(views_list),
+            "source": "self-analysis",
+        })
+
+    logger.info(
+        "Self-analysis complete: %d posts analyzed, %d hooks found",
+        len(collected), len(report.trending_hooks),
+    )
+
+    # Save report
+    from .config import get_settings
+    settings = get_settings(profile=profile)
+    _save_report(report, settings)
+
+    return report
+
+
 def get_competitor_hooks(profile: str | None = None) -> dict[str, float]:
     """Get hook performance data from competitor research.
 

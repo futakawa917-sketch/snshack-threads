@@ -149,16 +149,42 @@ def generate_daily_plan(
         total_posts=len(collected),
     )
 
-    # Get hook performance from history
+    # Get hook performance from history (weighted: recent posts count more)
     hook_performance: dict[str, float] = {}
     if collected:
         from .csv_analyzer import _detect_hooks
+        now = datetime.now()
         for record in collected:
             hooks = _detect_hooks(record.text)
+            # Weight recent posts more heavily (decay over 30 days)
+            try:
+                age_days = (now - datetime.fromisoformat(record.scheduled_at)).days
+            except ValueError:
+                age_days = 30
+            recency_weight = max(0.3, 1.0 - (age_days / 60))  # 0.3-1.0
+
             for hook in hooks:
+                weighted_views = record.views * recency_weight
                 if hook not in hook_performance:
                     hook_performance[hook] = 0.0
-                hook_performance[hook] = max(hook_performance[hook], record.views)
+                hook_performance[hook] = max(hook_performance[hook], weighted_views)
+
+    # Self-learning: analyze own post performance for topic/style insights
+    try:
+        from .post_history import get_performance_summary
+        perf = get_performance_summary(history)
+        if perf.get("collected", 0) >= 5:
+            # Boost hooks that are performing above average
+            avg_views = perf.get("avg_views", 0)
+            for hook_info in perf.get("top_hooks", []):
+                hook_name = hook_info["hook"]
+                if hook_info["avg_views"] > avg_views * 1.2:
+                    # This hook is outperforming — boost it
+                    if hook_name in hook_performance:
+                        hook_performance[hook_name] *= 1.3
+            logger.info("自己学習: %d投稿分析済み (平均views: %.0f)", perf["collected"], avg_views)
+    except Exception as e:
+        logger.debug("Self-learning skipped: %s", e)
 
     # Merge competitor research hooks (boost from trending hooks)
     try:

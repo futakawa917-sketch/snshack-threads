@@ -696,6 +696,103 @@ def research(
 
 # ── post performance tracking ─────────────────────────────────
 
+@app.command("collect-threads")
+def collect_threads(
+    min_age: int = typer.Option(24, help="Minimum hours since scheduled (default 24)"),
+):
+    """Collect metrics directly from Threads Graph API (no Metricool needed).
+
+    Matches published posts with history records and pulls insights.
+    Run after autopilot to gather performance data for learning loop.
+
+    Example:
+      snshack collect-threads           # collect for posts 24h+ old
+      snshack collect-threads --min-age 6  # collect early metrics
+    """
+    from .post_history import PostHistory, collect_threads_metrics
+
+    history = PostHistory()
+
+    if history.count == 0:
+        console.print("[yellow]投稿履歴がありません。[/yellow]")
+        return
+
+    pending = history.get_pending_collection(min_age_hours=min_age)
+    if not pending:
+        console.print("[green]全投稿のメトリクス収集済み。[/green]")
+        return
+
+    console.print(f"[dim]Threads APIからメトリクス収集中... ({len(pending)}件)[/dim]")
+    updated = collect_threads_metrics(history, min_age_hours=min_age)
+
+    if updated:
+        console.print(f"[green]{len(updated)}件のメトリクスを取得:[/green]")
+        for r in updated:
+            console.print(f"  {r.views:>6,} views | {r.likes:>3} likes | {r.text[:40]}...")
+    else:
+        console.print("[yellow]マッチする投稿が見つかりませんでした。[/yellow]")
+
+    # Show remaining uncollected
+    still_pending = history.get_pending_collection(min_age_hours=min_age)
+    if still_pending:
+        console.print(f"[dim]未収集: {len(still_pending)}件[/dim]")
+
+
+@app.command()
+def performance():
+    """Show performance summary and learning insights.
+
+    Analyzes all collected post data to show:
+    - Top-performing hooks
+    - Best posting times
+    - Optimal post lengths
+    - Milestone progress (toward 100 posts)
+    """
+    from .post_history import PostHistory, get_performance_summary
+
+    history = PostHistory()
+    perf = get_performance_summary(history)
+
+    if perf.get("collected", 0) == 0:
+        console.print("[yellow]パフォーマンスデータがまだありません。[/yellow]")
+        console.print("[dim]投稿してから24時間後に `snshack collect-threads` を実行してください。[/dim]")
+        return
+
+    # Milestone progress
+    total = perf["total_posts"]
+    collected = perf["collected"]
+    progress_bar = "█" * min(total, 100) + "░" * max(0, 100 - total)
+    console.print(f"\n[bold]📊 マイルストーン進捗: {total}/100投稿[/bold]")
+    console.print(f"  [{progress_bar[:50]}] {total}%")
+    console.print(f"  平均views: {perf['avg_views']:,.0f} | 平均likes: {perf['avg_likes']:.1f} | 最高views: {perf['max_views']:,}")
+
+    # Top hooks
+    if perf.get("top_hooks"):
+        console.print(f"\n[bold]🎣 トップフック (効果が高い順):[/bold]")
+        table = Table()
+        table.add_column("Hook", style="bold")
+        table.add_column("平均Views", justify="right")
+        table.add_column("平均Likes", justify="right")
+        table.add_column("使用回数", justify="right")
+        for h in perf["top_hooks"][:7]:
+            table.add_row(h["hook"], f"{h['avg_views']:,.0f}", f"{h['avg_likes']:.1f}", str(h["count"]))
+        console.print(table)
+
+    # Best times
+    if perf.get("best_times"):
+        console.print(f"\n[bold]⏰ ベスト投稿時間:[/bold]")
+        for t in perf["best_times"][:5]:
+            bar = "█" * min(20, int(t["avg_views"] / max(perf["avg_views"], 1) * 10))
+            console.print(f"  {t['hour']:02d}:00 — {t['avg_views']:,.0f} views ({t['count']}回) {bar}")
+
+    # Length performance
+    if perf.get("length_performance"):
+        console.print(f"\n[bold]📏 投稿長さ別パフォーマンス:[/bold]")
+        labels = {"short": "短文 (<100文字)", "medium": "中文 (100-300文字)", "long": "長文 (300文字+)"}
+        for bucket, stats in perf["length_performance"].items():
+            console.print(f"  {labels.get(bucket, bucket)}: {stats['avg_views']:,.0f} views, {stats['avg_likes']:.1f} likes ({stats['count']}回)")
+
+
 @app.command()
 def collect(
     min_age: int = typer.Option(24, help="Minimum hours since scheduled (default 24)"),
@@ -1532,6 +1629,96 @@ def threads_my_posts(
     console.print(table)
 
 
+@threads_app.command("import-posts")
+def threads_import_posts(
+    limit: int = typer.Option(100, "--limit", "-n", help="Max posts to import"),
+):
+    """Import existing Threads posts into history with metrics.
+
+    Pulls all your published posts from Threads API, adds them to
+    post_history with full insights data. This bootstraps the learning
+    loop with real performance data.
+
+    Example:
+      snshack threads import-posts        # import up to 100 posts
+      snshack threads import-posts -n 50   # import up to 50 posts
+    """
+    from .post_history import PostHistory
+    from .threads_api import ThreadsGraphClient
+
+    history = PostHistory()
+    existing_texts = {r.text.strip() for r in history.get_all() if r.text.strip()}
+
+    console.print(f"[dim]Threads APIから投稿をインポート中...[/dim]")
+
+    imported = 0
+    skipped = 0
+
+    with ThreadsGraphClient() as client:
+        posts = client.get_my_posts(limit=limit)
+        console.print(f"  取得: {len(posts)}件")
+
+        for p in posts:
+            text = (p.get("text") or "").strip()
+            if not text:
+                continue
+
+            # Skip if already in history
+            if text in existing_texts:
+                skipped += 1
+                continue
+
+            # Get timestamp
+            ts = p.get("timestamp", "")
+            if ts:
+                try:
+                    pub_time = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                except ValueError:
+                    pub_time = datetime.now()
+            else:
+                pub_time = datetime.now()
+
+            # Record in history
+            record = history.record_scheduled(text=text, publish_at=pub_time)
+
+            # Get insights
+            post_id = p.get("id", "")
+            if post_id:
+                try:
+                    insights = client.get_post_insights(post_id)
+                    views = insights.get("views", 0)
+                    likes = insights.get("likes", p.get("like_count", 0))
+                    replies = insights.get("replies", p.get("reply_count", 0))
+                    reposts = insights.get("reposts", p.get("repost_count", 0))
+                    quotes = insights.get("quotes", p.get("quote_count", 0))
+                    total = likes + replies + reposts + quotes
+                    engagement = (total / views * 100) if views > 0 else 0.0
+
+                    history.update_metrics(
+                        record, views=views, likes=likes,
+                        replies=replies, reposts=reposts,
+                        quotes=quotes, engagement=engagement,
+                    )
+                except Exception as e:
+                    console.print(f"  [dim]insights取得失敗: {e}[/dim]")
+
+            existing_texts.add(text)
+            imported += 1
+
+    console.print(f"[green]インポート完了: {imported}件[/green]")
+    if skipped:
+        console.print(f"  [dim]スキップ（重複）: {skipped}件[/dim]")
+
+    # Show performance summary after import
+    if imported > 0:
+        console.print()
+        from .post_history import get_performance_summary
+        perf = get_performance_summary(history)
+        if perf.get("collected", 0) > 0:
+            console.print(f"  総投稿数: {perf['total_posts']} | 収集済み: {perf['collected']}")
+            console.print(f"  平均views: {perf['avg_views']:,.0f} | 最高views: {perf['max_views']:,}")
+
+
 @threads_app.command("insights")
 def threads_insights(
     post_id: str = typer.Argument(help="Post ID to get insights for"),
@@ -2067,6 +2254,14 @@ def auto_research_cmd(
 
     console.print("[bold]Running auto-research...[/bold]")
     report = run_auto_research(profile=_active_profile, max_competitors=max_competitors)
+
+    # If keyword search failed, fall back to self-analysis
+    if report.errors and report.total_posts_found == 0:
+        console.print("[yellow]キーワード検索が利用不可 — 自己分析モードで実行[/yellow]")
+        from .auto_research import run_self_analysis
+        report = run_self_analysis(profile=_active_profile)
+        if report.trending_hooks:
+            console.print(f"  自己分析: {report.total_posts_found}投稿を分析")
 
     console.print(f"  Keywords searched: {len(report.keywords_searched)}")
     console.print(f"  Posts found: {report.total_posts_found}")
