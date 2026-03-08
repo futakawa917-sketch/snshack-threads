@@ -25,6 +25,7 @@ class Settings(BaseModel):
     """Application settings loaded from profile config or environment variables."""
 
     profile_name: str = "default"
+    display_name: str = ""  # UI表示用の名前（空ならprofile_nameを使用）
     user_token: str = ""
     user_id: str = ""
     blog_id: str = ""

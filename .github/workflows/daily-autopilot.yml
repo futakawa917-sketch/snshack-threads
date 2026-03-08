@@ -9,7 +9,7 @@ on:
 jobs:
   autopilot:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 180
 
     steps:
       - uses: actions/checkout@v4

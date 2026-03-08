@@ -327,10 +327,19 @@ def execute_plan(
 
     results = []
 
+    import time as _time
+
+    MIN_INTERVAL_SEC = 30 * 60  # 30 minutes between posts
+
     for i, post_data in enumerate(plan.posts):
         if i >= len(slots):
             results.append(f"Skipped (no slot): {post_data['hook']}")
             continue
+
+        # Wait 30 minutes between posts (skip wait for first post)
+        if i > 0:
+            logger.info("Waiting %d minutes before next post...", MIN_INTERVAL_SEC // 60)
+            _time.sleep(MIN_INTERVAL_SEC)
 
         slot = slots[i]
         # Add random jitter (±15min) to avoid posting at exactly the same time daily

@@ -116,14 +116,21 @@ def main():
 
     active = _read_active_profile()
 
-    # Sidebar
+    # Sidebar — show display_name if available
     st.sidebar.markdown("### クライアント選択")
-    selected_profile = st.sidebar.selectbox(
+    profile_labels = {}
+    for p in profiles:
+        s = get_settings(profile=p)
+        profile_labels[p] = s.display_name if s.display_name else p
+    display_names = [profile_labels[p] for p in profiles]
+    selected_index = profiles.index(active) if active in profiles else 0
+    selected_display = st.sidebar.selectbox(
         "クライアント",
-        profiles,
-        index=profiles.index(active) if active in profiles else 0,
+        display_names,
+        index=selected_index,
         label_visibility="collapsed",
     )
+    selected_profile = profiles[display_names.index(selected_display)]
     settings = get_settings(profile=selected_profile)
     st.sidebar.markdown(f"**TZ:** {settings.timezone}")
     st.sidebar.divider()
@@ -1145,28 +1152,28 @@ def _render_settings(st, profile, settings):
 
 
 def _profile_rename_form(st, profiles):
-    """Render profile rename form."""
-    from .config import rename_profile
-
+    """Render display name edit form."""
     with st.form("rename_profile"):
-        st.markdown("**クライアント名の変更**")
+        st.markdown("**表示名の変更**")
         col1, col2 = st.columns(2)
         with col1:
-            old_name = st.selectbox("変更するクライアント", profiles, key="rename_old")
+            target = st.selectbox("変更するクライアント", profiles, key="rename_old")
         with col2:
-            new_name = st.text_input("新しい名前", key="rename_new", placeholder="例: SNS-HACK-補助金")
-        rename_btn = st.form_submit_button("名前を変更", use_container_width=True)
+            s = get_settings(profile=target)
+            current = s.display_name if s.display_name else target
+            new_display = st.text_input("表示名", value=current, key="rename_new")
+        rename_btn = st.form_submit_button("表示名を変更", use_container_width=True)
 
-    if rename_btn and new_name:
-        new_name = new_name.strip()
+    if rename_btn and new_display:
         try:
-            rename_profile(old_name, new_name)
-            st.success(f"「{old_name}」→「{new_name}」に変更しました！")
+            config_path = Path.home() / ".snshack-threads" / "profiles" / target / "config.json"
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            config["display_name"] = new_display.strip()
+            config_path.write_text(
+                json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            st.success(f"表示名を「{new_display.strip()}」に変更しました！")
             st.rerun()
-        except FileExistsError:
-            st.error(f"「{new_name}」は既に存在します")
-        except FileNotFoundError:
-            st.error(f"「{old_name}」が見つかりません")
         except Exception as e:
             st.error(f"エラー: {e}")
 
