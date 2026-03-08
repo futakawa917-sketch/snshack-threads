@@ -42,6 +42,12 @@ class Settings(BaseModel):
     # Anthropic API
     anthropic_api_key: str = ""
 
+    # スタイルガイド（投稿のトーン・文体を自由記述）
+    style_guide: str = ""
+
+    # ショート投稿（1〜2行）の割合（0.0〜1.0、デフォルト50%）
+    short_post_ratio: float = 0.5
+
     # Hook patterns (業種別カスタマイズ用)
     custom_hooks: dict[str, str] = Field(default_factory=dict)
 

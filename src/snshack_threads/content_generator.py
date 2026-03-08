@@ -55,6 +55,10 @@ def generate_post(
     examples: list[str] | None = None,
     max_length: int = 500,
     additional_instructions: str = "",
+    news_context: list[str] | None = None,
+    reference_posts: list[str] | None = None,
+    style_guide: str = "",
+    short: bool = False,
 ) -> GeneratedPost:
     """Generate a single post draft using Claude.
 
@@ -65,28 +69,56 @@ def generate_post(
         examples: Example posts to use as reference.
         max_length: Maximum character count for the post.
         additional_instructions: Extra instructions for generation.
+        news_context: Recent news headlines to reference.
+        reference_posts: Example viral posts for style reference.
+        style_guide: Freeform style instructions.
+        short: If True, generate 1-2 line post (80 chars max).
     """
     client = _get_claude_client()
 
-    system = (
-        "あなたはSNS投稿のプロフェッショナルライターです。\n"
-        "Threads (Meta) 向けの投稿文を生成してください。\n"
-        "ルール:\n"
-        "- 1行目にフック（注目を引く文）を入れる\n"
-        "- 外部リンクやURL、LINE誘導は絶対に含めない\n"
-        "- 自然な日本語で書く\n"
-        "- ハッシュタグは使わない\n"
-        f"- {max_length}文字以内\n"
-        "- 投稿文のみを出力する（説明や前置きは不要）"
-    )
+    if short:
+        max_length = 80
+
+    system_parts = [
+        "あなたはSNS投稿のプロフェッショナルライターです。",
+        "Threads (Meta) 向けの投稿文を生成してください。",
+        "ルール:",
+        "- 1行目にフック（注目を引く文）を入れる",
+        "- 外部リンクやURL、LINE誘導は絶対に含めない",
+        "- 自然な日本語で書く",
+        "- ハッシュタグは使わない",
+        f"- {max_length}文字以内",
+        "- 投稿文のみを出力する（説明や前置きは不要）",
+    ]
+
+    if style_guide:
+        system_parts.append(f"\nスタイルガイド:\n{style_guide}")
+
+    system = "\n".join(system_parts)
 
     prompt_parts = [f"テーマ: {topic}"]
+
+    if short:
+        prompt_parts.append(
+            "1〜2行（80文字以内）で端的にインパクトのある投稿を書いてください。"
+        )
 
     if hook_type:
         prompt_parts.append(f"フックパターン: {hook_type}")
 
     if tone:
         prompt_parts.append(f"トーン: {tone}")
+
+    if news_context:
+        news_text = "\n".join(f"- {h}" for h in news_context[:5])
+        prompt_parts.append(
+            f"以下の最新ニュースを踏まえて投稿を書いてください:\n{news_text}"
+        )
+
+    if reference_posts:
+        prompt_parts.append("以下のバズ投稿のスタイルを参考にしてください:")
+        for i, rp in enumerate(reference_posts[:3], 1):
+            prompt_parts.append(f"  参考{i}: {rp[:200]}")
 
     if examples:
         prompt_parts.append("参考投稿（同じスタイルで）:")

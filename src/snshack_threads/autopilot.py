@@ -202,14 +202,41 @@ def generate_daily_plan(
         for tmpl in generate_templates(history, min_views=500):
             templates[tmpl.hook_type] = tmpl
 
+    # --- Web research: fetch latest news ---
+    news_context: list[str] = []
+    try:
+        from .web_research import search_news_for_keywords
+
+        research_kw = settings.get_research_keywords()
+        if research_kw:
+            news_context = search_news_for_keywords(research_kw, max_per_keyword=3)
+            logger.info("ニュースコンテキスト取得: %d件", len(news_context))
+    except Exception as e:
+        logger.warning("ニュース取得スキップ: %s", e)
+
+    # --- Load reference posts ---
+    ref_post_texts: list[str] = []
+    try:
+        from .reference_posts import ReferenceStore
+
+        ref_store = ReferenceStore(profile=profile)
+        refs = ref_store.get_references(limit=10)
+        ref_post_texts = [r.text for r in refs if r.text]
+    except Exception as e:
+        logger.warning("リファレンス投稿読み込みスキップ: %s", e)
+
+    # --- Style guide ---
+    style_guide = settings.style_guide
+
     # Generate posts
     generated_posts = []
 
     # Fresh posts
     n_fresh = posts_per_day - n_recycle
-    # Bootstrap phase: 50% short punchy posts (1-2 lines) for virality
-    n_short = n_fresh // 2 if phase == "bootstrap" else 0
-    short_indices = set(random.sample(range(n_fresh), n_short)) if n_short > 0 else set()
+    # Use short_post_ratio from settings for ALL phases
+    short_ratio = settings.short_post_ratio
+    n_short = max(0, round(n_fresh * short_ratio))
+    short_indices = set(random.sample(range(n_fresh), min(n_short, n_fresh))) if n_short > 0 else set()
 
     for i in range(n_fresh):
         hook = hooks[i] if i < len(hooks) else random.choice(all_hook_names)
@@ -227,13 +254,15 @@ def generate_daily_plan(
                     example_posts=tmpl.example_posts,
                     best_length=tmpl.best_length_bucket,
                 )
-            elif is_short:
-                post = generate_post(
-                    topic=topic, hook_type=hook, max_length=80,
-                    additional_instructions="1〜2行で端的に書いてください。短くインパクトのある投稿にしてください。余計な説明は不要です。",
-                )
             else:
-                post = generate_post(topic=topic, hook_type=hook)
+                post = generate_post(
+                    topic=topic,
+                    hook_type=hook,
+                    news_context=news_context if news_context else None,
+                    reference_posts=ref_post_texts if ref_post_texts else None,
+                    style_guide=style_guide,
+                    short=is_short,
+                )
 
             # NG check
             issues = check_ng(post.text)
