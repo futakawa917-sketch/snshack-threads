@@ -45,6 +45,9 @@ class Settings(BaseModel):
     # スタイルガイド（投稿のトーン・文体を自由記述）
     style_guide: str = ""
 
+    # ジャンル識別子 (例: "hojokin", "tenshoku", "beauty")
+    genre: str = ""
+
     # ショート投稿（1〜2行）の割合（0.0〜1.0、デフォルト50%）
     short_post_ratio: float = 0.5
 
@@ -58,6 +61,47 @@ class Settings(BaseModel):
         if not self.research_keywords:
             return []
         return [kw.strip() for kw in self.research_keywords.split(",") if kw.strip()]
+
+    @property
+    def profile_dir(self) -> Path:
+        return Path(self.data_dir)
+
+    @property
+    def style_guide_path(self) -> Path:
+        return self.profile_dir / "style_guide.md"
+
+    @property
+    def hooks_json_path(self) -> Path:
+        return self.profile_dir / "hooks.json"
+
+    @property
+    def reference_csv_path(self) -> Path:
+        return self.profile_dir / "reference.csv"
+
+    @property
+    def matrix_path(self) -> Path:
+        return self.profile_dir / "hook_theme_matrix.json"
+
+    def load_style_guide(self) -> str:
+        """Load style guide from file, falling back to config string."""
+        if self.style_guide_path.exists():
+            return self.style_guide_path.read_text(encoding="utf-8")
+        return self.style_guide
+
+    def load_hooks(self) -> dict:
+        """Load genre-specific hook patterns from hooks.json."""
+        if self.hooks_json_path.exists():
+            return json.loads(self.hooks_json_path.read_text(encoding="utf-8"))
+        return {"hooks": []}
+
+    def load_reference_examples(self, n: int = 10) -> list[str]:
+        """Load top reference post examples from reference_posts.json."""
+        ref_path = self.profile_dir / "reference_posts.json"
+        if not ref_path.exists():
+            return []
+        data = json.loads(ref_path.read_text(encoding="utf-8"))
+        posts = sorted(data, key=lambda x: x.get("views", 0), reverse=True)
+        return [p.get("content", p.get("text", "")) for p in posts[:n] if p.get("content") or p.get("text")]
 
 
 def _profile_dir(name: str) -> Path:
@@ -104,6 +148,15 @@ def list_profiles() -> list[str]:
     )
 
 
+SHARED_DIR = BASE_DIR / "shared"
+
+
+def get_shared_dir() -> Path:
+    """Return the shared intelligence directory, creating if needed."""
+    SHARED_DIR.mkdir(parents=True, exist_ok=True)
+    return SHARED_DIR
+
+
 def create_profile(
     name: str,
     *,
@@ -114,8 +167,9 @@ def create_profile(
     csv_path: str = "",
     threads_access_token: str = "",
     research_keywords: str = "",
+    genre: str = "",
 ) -> Path:
-    """Create a new profile directory with config.json."""
+    """Create a new profile directory with config.json and template files."""
     pdir = _profile_dir(name)
     if pdir.exists() and _profile_config_path(name).exists():
         raise FileExistsError(f"Profile '{name}' already exists")
@@ -130,10 +184,32 @@ def create_profile(
         "csv_path": csv_path,
         "threads_access_token": threads_access_token,
         "research_keywords": research_keywords,
+        "genre": genre,
     }
     _profile_config_path(name).write_text(
         json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+    # Generate template style_guide.md if not exists
+    style_guide_path = pdir / "style_guide.md"
+    if not style_guide_path.exists():
+        style_guide_path.write_text(
+            f"# {name} スタイルガイド\n\n"
+            f"ジャンル: {genre or '未設定'}\n\n"
+            "## トーン\n- カジュアル\n\n"
+            "## NG表現\n- 公式LINE誘導\n- 外部リンク\n\n"
+            "## CTA例\n- 申請したい人いますか？\n",
+            encoding="utf-8",
+        )
+
+    # Generate template hooks.json if not exists
+    hooks_path = pdir / "hooks.json"
+    if not hooks_path.exists():
+        hooks_path.write_text(
+            json.dumps({"hooks": [], "genre": genre}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
     return pdir
 
 
@@ -199,7 +275,13 @@ def get_settings(profile: str | None = None) -> Settings:
         data = json.loads(config_path.read_text(encoding="utf-8"))
         data["data_dir"] = str(_profile_dir(name))
         data["profile_name"] = name
-        return Settings(**data)
+        settings = Settings(**data)
+        # Load style_guide from file if exists and config string is empty
+        if not settings.style_guide:
+            file_guide = settings.load_style_guide()
+            if file_guide:
+                settings.style_guide = file_guide
+        return settings
 
     # Fallback: load from env vars (backward compatibility / default profile)
     return Settings(
