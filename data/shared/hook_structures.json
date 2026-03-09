@@ -1,0 +1,216 @@
+{
+  "metadata": {
+    "total_posts": 240,
+    "genre_count": 3,
+    "genres": [
+      "補助金",
+      "転職",
+      "軽配送"
+    ],
+    "analyzed_at": "2026-03-08 21:52:46"
+  },
+  "hook_structures": {
+    "overall": {
+      "number型": {
+        "label": "number型",
+        "post_count": 59,
+        "avg_views": 6618.2,
+        "avg_likes": 18.68,
+        "avg_replies": 3.32,
+        "avg_engagement": 0.808
+      },
+      "question型": {
+        "label": "question型",
+        "post_count": 6,
+        "avg_views": 1856.5,
+        "avg_likes": 3.83,
+        "avg_replies": 0.83,
+        "avg_engagement": 1.017
+      },
+      "shocking型": {
+        "label": "shocking型",
+        "post_count": 8,
+        "avg_views": 2145.4,
+        "avg_likes": 6.0,
+        "avg_replies": 0.88,
+        "avg_engagement": 0.75
+      },
+      "story型": {
+        "label": "story型",
+        "post_count": 18,
+        "avg_views": 2660.8,
+        "avg_likes": 7.17,
+        "avg_replies": 0.39,
+        "avg_engagement": 0.911
+      },
+      "command型": {
+        "label": "command型",
+        "post_count": 1,
+        "avg_views": 1002.0,
+        "avg_likes": 1.0,
+        "avg_replies": 0.0,
+        "avg_engagement": 0.1
+      },
+      "other": {
+        "label": "other",
+        "post_count": 158,
+        "avg_views": 5458.8,
+        "avg_likes": 17.76,
+        "avg_replies": 1.39,
+        "avg_engagement": 0.962
+      }
+    },
+    "per_genre": {
+      "補助金": {
+        "number型": {
+          "label": "number型",
+          "post_count": 50,
+          "avg_views": 7706.7,
+          "avg_likes": 21.06,
+          "avg_replies": 3.82,
+          "avg_engagement": 0.394
+        },
+        "question型": {
+          "label": "question型",
+          "post_count": 2,
+          "avg_views": 4984.0,
+          "avg_likes": 8.5,
+          "avg_replies": 1.5,
+          "avg_engagement": 0.52
+        },
+        "shocking型": {
+          "label": "shocking型",
+          "post_count": 6,
+          "avg_views": 2553.7,
+          "avg_likes": 7.17,
+          "avg_replies": 1.17,
+          "avg_engagement": 0.482
+        },
+        "story型": {
+          "label": "story型",
+          "post_count": 10,
+          "avg_views": 4486.3,
+          "avg_likes": 11.1,
+          "avg_replies": 0.7,
+          "avg_engagement": 0.357
+        },
+        "command型": {
+          "label": "command型",
+          "post_count": 1,
+          "avg_views": 1002.0,
+          "avg_likes": 1.0,
+          "avg_replies": 0.0,
+          "avg_engagement": 0.1
+        },
+        "other": {
+          "label": "other",
+          "post_count": 89,
+          "avg_views": 9285.2,
+          "avg_likes": 24.87,
+          "avg_replies": 2.17,
+          "avg_engagement": 0.402
+        }
+      },
+      "転職": {
+        "number型": {
+          "label": "number型",
+          "post_count": 8,
+          "avg_views": 618.4,
+          "avg_likes": 6.12,
+          "avg_replies": 0.5,
+          "avg_engagement": 3.425
+        },
+        "question型": {
+          "label": "question型",
+          "post_count": 1,
+          "avg_views": 799.0,
+          "avg_likes": 2.0,
+          "avg_replies": 0.0,
+          "avg_engagement": 0.25
+        },
+        "shocking型": {
+          "label": "shocking型",
+          "post_count": 1,
+          "avg_views": 1773.0,
+          "avg_likes": 3.0,
+          "avg_replies": 0.0,
+          "avg_engagement": 0.17
+        },
+        "story型": {
+          "label": "story型",
+          "post_count": 6,
+          "avg_views": 389.3,
+          "avg_likes": 2.67,
+          "avg_replies": 0.0,
+          "avg_engagement": 1.917
+        },
+        "command型": {
+          "label": "command型",
+          "post_count": 0,
+          "avg_views": 0.0,
+          "avg_likes": 0.0,
+          "avg_replies": 0,
+          "avg_engagement": 0.0
+        },
+        "other": {
+          "label": "other",
+          "post_count": 41,
+          "avg_views": 574.0,
+          "avg_likes": 12.51,
+          "avg_replies": 0.15,
+          "avg_engagement": 2.387
+        }
+      },
+      "軽配送": {
+        "number型": {
+          "label": "number型",
+          "post_count": 1,
+          "avg_views": 190.0,
+          "avg_likes": 0.0,
+          "avg_replies": 1.0,
+          "avg_engagement": 0.53
+        },
+        "question型": {
+          "label": "question型",
+          "post_count": 3,
+          "avg_views": 124.0,
+          "avg_likes": 1.33,
+          "avg_replies": 0.67,
+          "avg_engagement": 1.603
+        },
+        "shocking型": {
+          "label": "shocking型",
+          "post_count": 1,
+          "avg_views": 68.0,
+          "avg_likes": 2.0,
+          "avg_replies": 0.0,
+          "avg_engagement": 2.94
+        },
+        "story型": {
+          "label": "story型",
+          "post_count": 2,
+          "avg_views": 347.5,
+          "avg_likes": 1.0,
+          "avg_replies": 0.0,
+          "avg_engagement": 0.66
+        },
+        "command型": {
+          "label": "command型",
+          "post_count": 0,
+          "avg_views": 0.0,
+          "avg_likes": 0.0,
+          "avg_replies": 0,
+          "avg_engagement": 0.0
+        },
+        "other": {
+          "label": "other",
+          "post_count": 28,
+          "avg_views": 448.9,
+          "avg_likes": 2.86,
+          "avg_replies": 0.75,
+          "avg_engagement": 0.654
+        }
+      }
+    }
+  }
+}
