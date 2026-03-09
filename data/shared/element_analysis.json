@@ -1,0 +1,149 @@
+{
+  "elements": [
+    {
+      "element": "具体数字",
+      "with_count": 4,
+      "without_count": 7,
+      "with_avg_views": 366.5,
+      "without_avg_views": 110.0,
+      "with_avg_engagement": 0.07,
+      "without_avg_engagement": 0.9,
+      "lift_views_pct": 233.2,
+      "lift_engagement_pct": -92.2,
+      "reach_lift_pct": 233.2,
+      "list_lift_pct": 0
+    },
+    {
+      "element": "CTA_保存",
+      "with_count": 5,
+      "without_count": 6,
+      "with_avg_views": 176.0,
+      "without_avg_views": 226.0,
+      "with_avg_engagement": 0.346,
+      "without_avg_engagement": 0.809,
+      "lift_views_pct": -22.1,
+      "lift_engagement_pct": -57.3,
+      "reach_lift_pct": -22.1,
+      "list_lift_pct": 0
+    },
+    {
+      "element": "断言",
+      "with_count": 8,
+      "without_count": 3,
+      "with_avg_views": 121.6,
+      "without_avg_views": 421.0,
+      "with_avg_engagement": 0.582,
+      "without_avg_engagement": 0.644,
+      "lift_views_pct": -71.1,
+      "lift_engagement_pct": -9.6,
+      "reach_lift_pct": -71.1,
+      "list_lift_pct": 0
+    },
+    {
+      "element": "金額",
+      "with_count": 3,
+      "without_count": 8,
+      "with_avg_views": 54.0,
+      "without_avg_views": 259.2,
+      "with_avg_engagement": 1.571,
+      "without_avg_engagement": 0.234,
+      "lift_views_pct": -79.2,
+      "lift_engagement_pct": 571.3,
+      "reach_lift_pct": -79.2,
+      "list_lift_pct": 0
+    },
+    {
+      "element": "対比",
+      "with_count": 9,
+      "without_count": 2,
+      "with_avg_views": 113.6,
+      "without_avg_views": 607.0,
+      "with_avg_engagement": 0.694,
+      "without_avg_engagement": 0.171,
+      "lift_views_pct": -81.3,
+      "lift_engagement_pct": 306.7,
+      "reach_lift_pct": -81.3,
+      "list_lift_pct": 0
+    },
+    {
+      "element": "呼びかけ",
+      "with_count": 2,
+      "without_count": 9,
+      "with_avg_views": 28.0,
+      "without_avg_views": 242.2,
+      "with_avg_engagement": 0.0,
+      "without_avg_engagement": 0.732,
+      "lift_views_pct": -88.4,
+      "lift_engagement_pct": -100.0,
+      "reach_lift_pct": -88.4,
+      "list_lift_pct": 0
+    },
+    {
+      "element": "質問",
+      "with_count": 3,
+      "without_count": 8,
+      "with_avg_views": 22.7,
+      "without_avg_views": 271.0,
+      "with_avg_engagement": 0.0,
+      "without_avg_engagement": 0.823,
+      "lift_views_pct": -91.6,
+      "lift_engagement_pct": -100.0,
+      "reach_lift_pct": -91.6,
+      "list_lift_pct": 0
+    },
+    {
+      "element": "ネガティブ",
+      "with_count": 1,
+      "without_count": 10,
+      "with_avg_views": 12.0,
+      "without_avg_views": 222.4,
+      "with_avg_engagement": 0.0,
+      "without_avg_engagement": 0.658,
+      "lift_views_pct": -94.6,
+      "lift_engagement_pct": -100.0,
+      "reach_lift_pct": -94.6,
+      "list_lift_pct": 0
+    },
+    {
+      "element": "緊急性",
+      "with_count": 0,
+      "without_count": 11,
+      "with_avg_views": 0,
+      "without_avg_views": 203.3,
+      "with_avg_engagement": 0,
+      "without_avg_engagement": 0.599,
+      "lift_views_pct": -100.0,
+      "lift_engagement_pct": -100.0,
+      "reach_lift_pct": -100.0,
+      "list_lift_pct": 0
+    },
+    {
+      "element": "CTA_DM",
+      "with_count": 0,
+      "without_count": 11,
+      "with_avg_views": 0,
+      "without_avg_views": 203.3,
+      "with_avg_engagement": 0,
+      "without_avg_engagement": 0.599,
+      "lift_views_pct": -100.0,
+      "lift_engagement_pct": -100.0,
+      "reach_lift_pct": -100.0,
+      "list_lift_pct": 0
+    }
+  ],
+  "total_posts": 11,
+  "analyzed_at": "2026-03-09T17:29:21.682460",
+  "data_sources": [
+    "/Users/futakawa/.snshack-threads/profiles/default/post_history.json"
+  ],
+  "boost_elements": [],
+  "avoid_elements": [
+    "CTA_保存",
+    "断言",
+    "対比"
+  ],
+  "reach_boost": [
+    "具体数字"
+  ],
+  "list_boost": []
+}
