@@ -1,0 +1,80 @@
+{
+  "metadata": {
+    "total_posts": 240,
+    "genre_count": 3,
+    "genres": [
+      "補助金",
+      "転職",
+      "軽配送"
+    ],
+    "analyzed_at": "2026-03-08 21:52:46"
+  },
+  "cta_analysis": {
+    "cta_types": {
+      "保存CTA": {
+        "label": "保存CTA",
+        "post_count": 1,
+        "avg_views": 867.0,
+        "avg_likes": 3.0,
+        "avg_replies": 5.0,
+        "avg_engagement": 0.92
+      },
+      "コメントCTA": {
+        "label": "コメントCTA",
+        "post_count": 1,
+        "avg_views": 95.0,
+        "avg_likes": 0.0,
+        "avg_replies": 0.0,
+        "avg_engagement": 0.0
+      },
+      "フォローCTA": {
+        "label": "フォローCTA",
+        "post_count": 1,
+        "avg_views": 54.0,
+        "avg_likes": 1.0,
+        "avg_replies": 0.0,
+        "avg_engagement": 1.85
+      },
+      "いいねCTA": {
+        "label": "いいねCTA",
+        "post_count": 0,
+        "avg_views": 0.0,
+        "avg_likes": 0.0,
+        "avg_replies": 0,
+        "avg_engagement": 0.0
+      },
+      "リポストCTA": {
+        "label": "リポストCTA",
+        "post_count": 0,
+        "avg_views": 0.0,
+        "avg_likes": 0.0,
+        "avg_replies": 0,
+        "avg_engagement": 0.0
+      },
+      "DM_CTA": {
+        "label": "DM_CTA",
+        "post_count": 4,
+        "avg_views": 12687.8,
+        "avg_likes": 60.0,
+        "avg_replies": 6.0,
+        "avg_engagement": 0.512
+      },
+      "質問CTA": {
+        "label": "質問CTA",
+        "post_count": 14,
+        "avg_views": 18408.4,
+        "avg_likes": 41.36,
+        "avg_replies": 4.93,
+        "avg_engagement": 1.521
+      }
+    },
+    "no_cta_baseline": {
+      "label": "no_cta",
+      "post_count": 219,
+      "avg_views": 4419.4,
+      "avg_likes": 14.38,
+      "avg_replies": 1.47,
+      "avg_engagement": 0.898
+    }
+  }
+}
