@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+*.db
+*.sqlite3
+.streamlit/secrets.toml
+
+# Data directory (persisted by GitHub Actions)
+# config.json contains secrets — never commit
+data/*/config.json
