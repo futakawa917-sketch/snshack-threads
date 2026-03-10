@@ -376,7 +376,7 @@ def _render_time_analysis(st, df):
     # Heatmap: day x hour
     st.subheader("曜日×時間帯 ヒートマップ")
     pivot = df.pivot_table(values="Views", index="DayName", columns="Hour", aggfunc="mean")
-    pivot = pivot.reindex(dow_order)
+    pivot = pivot.reindex(dow_order).fillna(0)
     st.dataframe(
         pivot.style.background_gradient(cmap="YlOrRd", axis=None).format("{:.0f}"),
         use_container_width=True,
