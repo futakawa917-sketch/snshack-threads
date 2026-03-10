@@ -2,14 +2,27 @@ name: Daily Autopilot
 
 on:
   schedule:
-    # 毎朝7:00 JST = 22:00 UTC (前日)
-    - cron: '0 22 * * *'
+    # 各投稿時刻に実行 (JST → UTC変換)
+    # 7:30 JST = 22:30 UTC (前日)
+    - cron: '30 22 * * *'
+    # 12:00 JST = 3:00 UTC
+    - cron: '0 3 * * *'
+    # 18:00 JST = 9:00 UTC
+    - cron: '0 9 * * *'
+    # 19:30 JST = 10:30 UTC
+    - cron: '30 10 * * *'
+    # 21:00 JST = 12:00 UTC
+    - cron: '0 12 * * *'
   workflow_dispatch: # 手動実行も可能
 
+env:
+  THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
 jobs:
-  autopilot:
+  post:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -22,100 +35,77 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
-        run: |
-          pip install -e ".[ai]"
+        run: pip install -e ".[ai]"
 
       - name: Restore profile data
         uses: actions/cache@v4
         with:
           path: ~/.snshack-threads
-          key: snshack-data-${{ github.run_number }}
-          restore-keys: |
-            snshack-data-
+          key: snshack-data-default-v1
+          restore-keys: snshack-data-default-
 
       - name: Setup profile
-        env:
-          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          PROFILE_GENRE: ${{ secrets.PROFILE_GENRE }}
-          RESEARCH_KEYWORDS: ${{ secrets.RESEARCH_KEYWORDS }}
         run: |
           mkdir -p ~/.snshack-threads/profiles/default
-          cat > ~/.snshack-threads/profiles/default/config.json << EOF
-          {
-            "profile_name": "default",
-            "threads_access_token": "${THREADS_ACCESS_TOKEN}",
-            "anthropic_api_key": "${ANTHROPIC_API_KEY}",
-            "genre": "${PROFILE_GENRE}",
-            "research_keywords": "${RESEARCH_KEYWORDS}",
-            "timezone": "Asia/Tokyo",
-            "posts_per_day": 5,
-            "short_post_ratio": 0.5
+          python -c "
+          import json, os
+          config = {
+              'profile_name': 'default',
+              'threads_access_token': os.environ['THREADS_ACCESS_TOKEN'],
+              'anthropic_api_key': os.environ['ANTHROPIC_API_KEY'],
+              'genre': os.environ.get('PROFILE_GENRE', ''),
+              'research_keywords': os.environ.get('RESEARCH_KEYWORDS', ''),
+              'timezone': 'Asia/Tokyo',
+              'posts_per_day': 5,
+              'short_post_ratio': 0.5,
           }
-          EOF
+          # Merge with existing config (preserve post_history path etc.)
+          config_path = os.path.expanduser('~/.snshack-threads/profiles/default/config.json')
+          if os.path.exists(config_path):
+              existing = json.loads(open(config_path).read())
+              existing.update({k: v for k, v in config.items() if v})
+              config = existing
+          with open(config_path, 'w') as f:
+              json.dump(config, f, ensure_ascii=False, indent=2)
+          "
+        env:
+          PROFILE_GENRE: ${{ secrets.PROFILE_GENRE }}
+          RESEARCH_KEYWORDS: ${{ secrets.RESEARCH_KEYWORDS }}
 
       - name: Copy style guide and hooks
         run: |
-          # Copy style guide if exists in repo
-          if [ -f data/style_guide.md ]; then
-            cp data/style_guide.md ~/.snshack-threads/profiles/default/style_guide.md
-          fi
-          if [ -f data/hooks.json ]; then
-            cp data/hooks.json ~/.snshack-threads/profiles/default/hooks.json
-          fi
+          [ -f data/style_guide.md ] && cp data/style_guide.md ~/.snshack-threads/profiles/default/
+          [ -f data/hooks.json ] && cp data/hooks.json ~/.snshack-threads/profiles/default/
+          true
 
-      - name: Collect metrics
-        env:
-          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+      - name: Morning tasks (first run only)
+        if: github.event.schedule == '30 22 * * *' || github.event_name == 'workflow_dispatch'
         run: |
-          snshack --profile default collect-threads || echo "Collect failed (may be first run)"
+          echo "=== Morning: Collect metrics ==="
+          snshack --profile default collect-threads || echo "Collect skipped"
           snshack --profile default collect-early || echo "Early collect skipped"
           snshack --profile default track-followers || echo "Follower tracking skipped"
 
-      - name: Run autopilot
-        env:
-          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
+          echo "=== Morning: Generate daily plan ==="
           snshack --profile default autopilot
 
-      - name: Publish scheduled posts
-        env:
-          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+      - name: Publish due posts
         run: |
           python -c "
-          from snshack_threads.timed_publisher import publish_due_posts
-          results = publish_due_posts(profile='default')
-          for r in results:
-              print(r)
+          from snshack_threads.timed_publisher import publish_due_posts, get_pending_count
+          pending = get_pending_count(profile='default')
+          print(f'Pending posts: {pending}')
+          if pending > 0:
+              results = publish_due_posts(profile='default')
+              for r in results:
+                  print(r)
+          else:
+              print('No pending posts')
           "
-
-      - name: Wait and publish remaining posts
-        env:
-          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
-        run: |
-          for i in $(seq 1 24); do
-            remaining=$(python -c "
-          from snshack_threads.timed_publisher import get_pending_count
-          print(get_pending_count(profile='default'))
-          ")
-            if [ "$remaining" = "0" ]; then
-              echo "All posts published"
-              break
-            fi
-            echo "Waiting 10 minutes... ($remaining pending)"
-            sleep 600
-            python -c "
-          from snshack_threads.timed_publisher import publish_due_posts
-          results = publish_due_posts(profile='default')
-          for r in results:
-              print(r)
-          "
-          done
 
       - name: Save profile data
         if: always()
         uses: actions/cache/save@v4
         with:
           path: ~/.snshack-threads
-          key: snshack-data-${{ github.run_number }}
+          key: snshack-data-default-v1
