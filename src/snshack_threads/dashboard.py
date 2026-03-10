@@ -131,8 +131,14 @@ def _load_profile_data(st, settings, profile: str):
                     st.sidebar.info(f"CSV統合後: {len(df)}件")
             return df
 
-    # Fallback: CSV
-    st.sidebar.info("post_historyなし — CSVモード")
+    # Fallback 1: Threads API (live data)
+    if settings.threads_access_token:
+        df = _load_threads_api(st, settings)
+        if df is not None and not df.empty:
+            return df
+
+    # Fallback 2: CSV
+    st.sidebar.info("データなし — CSVアップロードしてください")
     csv_path = None
     if settings.csv_path:
         csv_path = Path(settings.csv_path)
@@ -147,6 +153,59 @@ def _load_profile_data(st, settings, profile: str):
         return _load_csv_upload(uploaded)
 
     return None
+
+
+def _load_threads_api(st, settings):
+    """Load data directly from Threads Graph API."""
+    try:
+        from .threads_api import ThreadsGraphClient
+
+        st.sidebar.info("📡 Threads APIからデータ取得中...")
+        with ThreadsGraphClient(access_token=settings.threads_access_token) as client:
+            posts = client.get_my_posts(limit=100)
+
+            if not posts:
+                return None
+
+            rows = []
+            for p in posts:
+                # Get insights for each post
+                post_id = p.get("id", "")
+                try:
+                    insights = client.get_post_insights(post_id) if post_id else {}
+                except Exception:
+                    insights = {}
+
+                views = insights.get("views", 0)
+                likes = insights.get("likes", p.get("like_count", 0))
+                replies = insights.get("replies", p.get("reply_count", 0))
+                reposts = insights.get("reposts", p.get("repost_count", 0))
+                quotes = insights.get("quotes", p.get("quote_count", 0))
+                total = likes + replies + reposts + quotes
+                engagement = total / views if views > 0 else 0.0
+
+                rows.append({
+                    "Content": p.get("text", ""),
+                    "Date": p.get("timestamp", ""),
+                    "Views": views,
+                    "Likes": likes,
+                    "Replies": replies,
+                    "Reposts": reposts,
+                    "Quotes": quotes,
+                    "Engagement": engagement,
+                    "PostType": "reach",
+                })
+
+        if not rows:
+            return None
+
+        df = pd.DataFrame(rows)
+        df = _normalize_df(df)
+        st.sidebar.success(f"📡 Threads API ({len(df)}件)")
+        return df
+    except Exception as e:
+        st.sidebar.warning(f"Threads API: {e}")
+        return None
 
 
 def _load_post_history(path: Path):
