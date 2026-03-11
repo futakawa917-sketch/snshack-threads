@@ -19,6 +19,10 @@ jobs:
         profile: [default]
       fail-fast: false
 
+    concurrency:
+      group: autopilot-${{ matrix.profile }}
+      cancel-in-progress: false
+
     env:
       THREADS_ACCESS_TOKEN: ${{ secrets[format('THREADS_TOKEN_{0}', matrix.profile)] || secrets.THREADS_ACCESS_TOKEN }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -185,9 +189,9 @@ jobs:
               if entries and entries[0].get('date') != today_str:
                   need_morning = True
                   print('Pending posts are from a previous day, regenerating...')
-              elif not any(e['status'] == 'pending' for e in entries):
+              elif not entries:
                   need_morning = True
-                  print('All posts already published, regenerating...')
+                  print('Pending file is empty')
           else:
               need_morning = True
               print('No pending file found')
