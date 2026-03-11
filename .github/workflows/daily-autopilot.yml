@@ -2,17 +2,9 @@ name: Daily Autopilot
 
 on:
   schedule:
-    # 各投稿時刻に実行 (JST → UTC変換)
-    # 7:30 JST = 22:30 UTC (前日)
-    - cron: '30 22 * * *'
-    # 12:00 JST = 3:00 UTC
-    - cron: '0 3 * * *'
-    # 18:00 JST = 9:00 UTC
-    - cron: '0 9 * * *'
-    # 19:30 JST = 10:30 UTC
-    - cron: '30 10 * * *'
-    # 21:00 JST = 12:00 UTC
-    - cron: '0 12 * * *'
+    # 毎時0分に実行 (JST 6:00-23:00 = UTC 21:00-14:00)
+    # GitHub Actionsは最大15分の遅延があるが、毎時実行なので確実にカバー
+    - cron: '0 * * * *'
   workflow_dispatch: # 手動実行も可能
 
 env:
@@ -78,51 +70,50 @@ jobs:
           [ -f data/hooks.json ] && cp data/hooks.json ~/.snshack-threads/profiles/default/
           true
 
-      - name: Morning tasks (first run only)
-        if: github.event.schedule == '30 22 * * *'
-        run: |
-          echo "=== Morning: Collect metrics ==="
-          snshack --profile default collect-threads || echo "Collect skipped"
-          snshack --profile default collect-early || echo "Early collect skipped"
-          snshack --profile default track-followers || echo "Follower tracking skipped"
-
-          echo "=== Morning: Generate daily plan ==="
-          snshack --profile default autopilot
-
-      - name: Generate plan if no pending posts
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          PENDING=$(python -c "
-          import json; from pathlib import Path
-          from snshack_threads.config import get_settings
-          s = get_settings(profile='default')
-          p = s.profile_dir / 'pending_posts.json'
-          if not p.exists(): print('0'); exit()
-          entries = json.loads(p.read_text())
-          print(sum(1 for e in entries if e['status'] == 'pending'))
-          " 2>/dev/null || echo "0")
-          echo "Pending posts: $PENDING"
-          if [ "$PENDING" = "0" ]; then
-            echo "No pending posts, generating new plan..."
-            snshack --profile default collect-threads || echo "Collect skipped"
-            snshack --profile default autopilot
-          else
-            echo "Skipping plan generation, $PENDING posts already pending"
-          fi
-
-      - name: Publish next post
+      - name: Smart publish
         run: |
           python -c "
           import json, os
+          from datetime import datetime, date
           from pathlib import Path
-          from snshack_threads.threads_api import ThreadsGraphClient
           from snshack_threads.config import get_settings
 
           settings = get_settings(profile='default')
           pending_path = settings.profile_dir / 'pending_posts.json'
+          now = datetime.now()
+          current_hour = now.hour
+          current_minute = now.minute
+          today_str = date.today().isoformat()
 
-          if not pending_path.exists():
+          print(f'Current time: {now.strftime(\"%Y-%m-%d %H:%M:%S %Z\")}')
+
+          # ── Step 1: 朝の処理 (6-8時台、またはpending無し) ──
+          need_morning = False
+          if pending_path.exists():
+              entries = json.loads(pending_path.read_text(encoding='utf-8'))
+              # pending_postsが今日の分かチェック
+              if entries and entries[0].get('date') != today_str:
+                  need_morning = True
+                  print('Pending posts are from a previous day, regenerating...')
+              elif not any(e['status'] == 'pending' for e in entries):
+                  need_morning = True
+                  print('All posts already published, regenerating...')
+          else:
+              need_morning = True
               print('No pending file found')
+
+          if need_morning:
+              print('=== Running morning tasks ===')
+              import subprocess
+              subprocess.run(['snshack', '--profile', 'default', 'collect-threads'], check=False)
+              subprocess.run(['snshack', '--profile', 'default', 'collect-early'], check=False)
+              subprocess.run(['snshack', '--profile', 'default', 'track-followers'], check=False)
+              print('=== Generating daily plan ===')
+              subprocess.run(['snshack', '--profile', 'default', 'autopilot'], check=True)
+
+          # ── Step 2: 投稿すべきか判断 ──
+          if not pending_path.exists():
+              print('No pending file after plan generation')
               exit(0)
 
           entries = json.loads(pending_path.read_text(encoding='utf-8'))
@@ -132,13 +123,36 @@ jobs:
               print('No pending posts')
               exit(0)
 
-          # Publish the first pending post
-          entry = pending[0]
+          # 現在時刻以前にスケジュールされた未投稿を探す
+          due = []
+          for e in entries:
+              if e['status'] != 'pending':
+                  continue
+              sh = e['scheduled_hour']
+              sm = e.get('scheduled_minute', 0)
+              # 現在時刻の1時間以内にスケジュールされた投稿を対象
+              # (例: 7:30スケジュール → 7:00-8:00の実行で投稿)
+              if sh == current_hour or (sh == current_hour - 1 and sm > 0):
+                  due.append(e)
+
+          # workflow_dispatchの場合は次の1件を投稿
+          if not due and os.environ.get('GITHUB_EVENT_NAME') == 'workflow_dispatch':
+              due = [pending[0]]
+              print('Manual trigger: publishing next pending post')
+
+          if not due:
+              print(f'No posts due at {current_hour:02d}:{current_minute:02d}')
+              print(f'Pending schedule: {[(e[\"scheduled_hour\"], e.get(\"scheduled_minute\", 0)) for e in pending]}')
+              exit(0)
+
+          # ── Step 3: 投稿 (due分だけ、最大1件) ──
+          entry = due[0]
           idx = entries.index(entry)
 
-          print(f'Publishing: {entry[\"hook\"]} ({entry[\"scheduled_hour\"]:02d}:{entry[\"scheduled_minute\"]:02d})')
+          print(f'Publishing: {entry[\"hook\"]} ({entry[\"scheduled_hour\"]:02d}:{entry.get(\"scheduled_minute\", 0):02d})')
           print(f'Text: {entry[\"text\"][:80]}...')
 
+          from snshack_threads.threads_api import ThreadsGraphClient
           try:
               with ThreadsGraphClient() as client:
                   post_id = client.create_text_post(entry['text'])
@@ -148,13 +162,13 @@ jobs:
               entries[idx]['status'] = f'failed: {e}'
               print(f'Failed: {e}')
 
-          # Save updated status
           pending_path.write_text(
               json.dumps(entries, ensure_ascii=False, indent=2), encoding='utf-8'
           )
 
           remaining = sum(1 for e in entries if e['status'] == 'pending')
-          print(f'Remaining: {remaining} posts')
+          published_today = sum(1 for e in entries if e['status'] == 'published')
+          print(f'Published today: {published_today}/5, Remaining: {remaining}')
           "
 
       - name: Save profile data

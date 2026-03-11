@@ -36,6 +36,9 @@ def save_pending_plan(
     settings = get_settings(profile=profile)
     pending_path = settings.profile_dir / "pending_posts.json"
 
+    from datetime import date as date_cls
+
+    today_str = date_cls.today().isoformat()
     entries = []
     for i, post in enumerate(posts):
         if i < len(schedule_slots):
@@ -46,6 +49,7 @@ def save_pending_plan(
             "text": post["text"],
             "hook": post.get("hook", ""),
             "post_type": post.get("post_type", "reach"),
+            "date": today_str,
             "scheduled_hour": hour,
             "scheduled_minute": minute,
             "status": "pending",
