@@ -36,9 +36,15 @@ def main() -> None:
 
     profiles = list_profiles()
 
+    # Sidebar: profile selector + management
+    st.sidebar.markdown("---")
+
+    # Add new client button
+    if st.sidebar.toggle("➕ クライアント追加・設定", value=not profiles):
+        _render_client_management(st)
+        return
+
     if not profiles:
-        st.sidebar.warning("プロフィールが未設定です")
-        st.info("まず `snshack profile create` でプロフィールを作成してください")
         return
 
     # Profile selector with display names
@@ -64,7 +70,7 @@ def main() -> None:
 
     if df is None or df.empty:
         st.warning(f"**{profile_labels.get(selected_profile, selected_profile)}** のデータがまだありません")
-        st.info("autopilot を実行して投稿データを蓄積してください")
+        st.info("Threads APIトークンが正しければ、次回のデータ収集後に表示されます")
         return
 
     # ── Client Header ──────────────────────────────────────
@@ -105,6 +111,231 @@ def main() -> None:
 
     with tab_status:
         _render_learning_status(st, settings, selected_profile)
+
+
+# ── Client Management ────────────────────────────────────
+
+
+def _render_client_management(st):
+    """Render the client add/edit management page."""
+    import json
+
+    from .config import PROFILES_DIR, get_settings, list_profiles
+
+    st.title("クライアント管理")
+
+    tab_add, tab_edit, tab_list = st.tabs(["➕ 新規追加", "✏️ 設定変更", "📋 一覧"])
+
+    # ── Tab: Add new client ──
+    with tab_add:
+        st.subheader("新規クライアント追加")
+
+        with st.form("add_client"):
+            profile_id = st.text_input(
+                "プロファイルID（英数字、スペースなし）",
+                placeholder="例: hojokin_client1",
+            )
+            display_name = st.text_input(
+                "表示名",
+                placeholder="例: 株式会社〇〇 補助金アカウント",
+            )
+            genre = st.selectbox(
+                "ジャンル",
+                ["hojokin", "tenshoku", "beauty", "recruit", "fudosan", "other"],
+                help="同ジャンルのデータを共有して学習を加速します",
+            )
+            threads_token = st.text_input(
+                "Threads Access Token",
+                type="password",
+                help="Meta Developer Consoleから取得",
+            )
+            anthropic_key = st.text_input(
+                "Anthropic API Key",
+                type="password",
+                help="AI投稿生成に必要",
+            )
+            research_keywords = st.text_input(
+                "リサーチキーワード（カンマ区切り）",
+                placeholder="例: 補助金,助成金,資金調達",
+            )
+
+            st.markdown("---")
+            st.markdown("**投稿設定**")
+            col1, col2 = st.columns(2)
+            posts_per_day = col1.number_input("1日の投稿数", min_value=1, max_value=10, value=5)
+            short_ratio = col2.slider("ショート投稿割合", 0.0, 1.0, 0.5, 0.1)
+
+            style_guide = st.text_area(
+                "スタイルガイド（任意）",
+                placeholder="トーン、NG表現、CTA例などを自由記述",
+                height=100,
+            )
+
+            submitted = st.form_submit_button("追加", type="primary")
+
+        if submitted:
+            if not profile_id:
+                st.error("プロファイルIDを入力してください")
+            elif not profile_id.replace("_", "").replace("-", "").isalnum():
+                st.error("プロファイルIDは英数字・ハイフン・アンダースコアのみ使えます")
+            elif not threads_token:
+                st.error("Threads Access Tokenを入力してください")
+            else:
+                try:
+                    profile_dir = PROFILES_DIR / profile_id
+                    profile_dir.mkdir(parents=True, exist_ok=True)
+                    config = {
+                        "profile_name": profile_id,
+                        "display_name": display_name,
+                        "threads_access_token": threads_token,
+                        "anthropic_api_key": anthropic_key,
+                        "genre": genre,
+                        "research_keywords": research_keywords,
+                        "timezone": "Asia/Tokyo",
+                        "posts_per_day": posts_per_day,
+                        "short_post_ratio": short_ratio,
+                    }
+                    config_path = profile_dir / "config.json"
+                    config_path.write_text(
+                        json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8"
+                    )
+                    # Create style guide if provided
+                    if style_guide:
+                        (profile_dir / "style_guide.md").write_text(style_guide, encoding="utf-8")
+
+                    st.success(f"✅ **{display_name or profile_id}** を追加しました！")
+                    st.info("サイドバーの「クライアント追加・設定」をオフにすると、ダッシュボードに戻ります")
+
+                    # Test Threads API connection
+                    try:
+                        from .threads_api import ThreadsGraphClient
+                        with ThreadsGraphClient(access_token=threads_token) as client:
+                            me = client.get_me()
+                            st.success(f"📡 Threads API接続OK: @{me.get('username', '?')}")
+                    except Exception as e:
+                        st.warning(f"⚠️ Threads API接続テスト失敗: {e}")
+                        st.info("トークンを確認してください。ダッシュボードは作成されています。")
+
+                except Exception as e:
+                    st.error(f"作成失敗: {e}")
+
+    # ── Tab: Edit existing client ──
+    with tab_edit:
+        st.subheader("クライアント設定変更")
+        profiles = list_profiles()
+        if not profiles:
+            st.info("まだクライアントがありません")
+        else:
+            edit_profile = st.selectbox("編集するクライアント", profiles, key="edit_select")
+            settings = get_settings(profile=edit_profile)
+            config_path = PROFILES_DIR / edit_profile / "config.json"
+
+            try:
+                current_config = json.loads(config_path.read_text(encoding="utf-8"))
+            except Exception:
+                current_config = {}
+
+            with st.form("edit_client"):
+                new_display = st.text_input("表示名", value=current_config.get("display_name", ""))
+                new_genre = st.text_input("ジャンル", value=current_config.get("genre", ""))
+                new_token = st.text_input(
+                    "Threads Access Token",
+                    value=current_config.get("threads_access_token", ""),
+                    type="password",
+                )
+                new_api_key = st.text_input(
+                    "Anthropic API Key",
+                    value=current_config.get("anthropic_api_key", ""),
+                    type="password",
+                )
+                new_keywords = st.text_input(
+                    "リサーチキーワード",
+                    value=current_config.get("research_keywords", ""),
+                )
+                col1, col2 = st.columns(2)
+                new_posts = col1.number_input(
+                    "1日の投稿数",
+                    min_value=1, max_value=10,
+                    value=current_config.get("posts_per_day", 5),
+                )
+                new_short = col2.slider(
+                    "ショート投稿割合",
+                    0.0, 1.0,
+                    value=float(current_config.get("short_post_ratio", 0.5)),
+                    step=0.1,
+                )
+
+                # Style guide
+                style_path = PROFILES_DIR / edit_profile / "style_guide.md"
+                current_style = ""
+                if style_path.exists():
+                    current_style = style_path.read_text(encoding="utf-8")
+                new_style = st.text_area("スタイルガイド", value=current_style, height=100)
+
+                save_btn = st.form_submit_button("保存", type="primary")
+
+            if save_btn:
+                current_config.update({
+                    "display_name": new_display,
+                    "genre": new_genre,
+                    "threads_access_token": new_token,
+                    "anthropic_api_key": new_api_key,
+                    "research_keywords": new_keywords,
+                    "posts_per_day": new_posts,
+                    "short_post_ratio": new_short,
+                })
+                config_path.write_text(
+                    json.dumps(current_config, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                if new_style:
+                    style_path.write_text(new_style, encoding="utf-8")
+                st.success(f"✅ **{new_display or edit_profile}** を更新しました！")
+
+                # Test connection
+                if new_token:
+                    try:
+                        from .threads_api import ThreadsGraphClient
+                        with ThreadsGraphClient(access_token=new_token) as client:
+                            me = client.get_me()
+                            st.success(f"📡 Threads API接続OK: @{me.get('username', '?')}")
+                    except Exception as e:
+                        st.warning(f"⚠️ Threads API接続テスト失敗: {e}")
+
+    # ── Tab: Client list ──
+    with tab_list:
+        st.subheader("クライアント一覧")
+        profiles = list_profiles()
+        if not profiles:
+            st.info("まだクライアントがありません")
+        else:
+            for p in profiles:
+                try:
+                    s = get_settings(profile=p)
+                    label = s.display_name or p
+                    has_token = "✅" if s.threads_access_token else "❌"
+                    has_api = "✅" if s.anthropic_api_key else "❌"
+
+                    with st.expander(f"**{label}** ({p})"):
+                        col1, col2, col3 = st.columns(3)
+                        col1.write(f"Threads Token: {has_token}")
+                        col2.write(f"Anthropic Key: {has_api}")
+                        col3.write(f"ジャンル: {s.genre or '未設定'}")
+
+                        col4, col5 = st.columns(2)
+                        col4.write(f"投稿数/日: {s.posts_per_day}")
+                        col5.write(f"ショート割合: {s.short_post_ratio:.0%}")
+
+                        if s.threads_access_token:
+                            if st.button(f"接続テスト", key=f"test_{p}"):
+                                try:
+                                    from .threads_api import ThreadsGraphClient
+                                    with ThreadsGraphClient(access_token=s.threads_access_token) as client:
+                                        me = client.get_me()
+                                        st.success(f"📡 @{me.get('username', '?')} — 接続OK")
+                                except Exception as e:
+                                    st.error(f"接続失敗: {e}")
+                except Exception as e:
+                    st.error(f"{p}: {e}")
 
 
 # ── Data Loading ─────────────────────────────────────────
