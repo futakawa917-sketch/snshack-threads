@@ -1780,6 +1780,48 @@ def rate_limit_status():
         )
 
 
+# ── token management ──────────────────────────────────────
+
+@app.command("check-token")
+def check_token():
+    """Check Threads token expiry and auto-refresh if expiring within 7 days."""
+    from .threads_api import ThreadsGraphClient
+
+    try:
+        client = ThreadsGraphClient()
+    except Exception as e:
+        console.print(f"[red]Failed to create API client: {e}[/red]")
+        raise typer.Exit(1)
+
+    with client:
+        info = client.get_token_info()
+
+    expires_at = info.get("expires_at", 0)
+    if not expires_at:
+        console.print("[yellow]Could not determine token expiry (debug_token returned no expires_at).[/yellow]")
+        console.print(f"  Token info: {info}")
+        return
+
+    from datetime import datetime, timezone
+
+    expiry_dt = datetime.fromtimestamp(expires_at, tz=timezone.utc)
+    now = datetime.now(tz=timezone.utc)
+    remaining = expiry_dt - now
+    days_left = remaining.days
+
+    console.print(f"  Token expires: {expiry_dt.strftime('%Y-%m-%d %H:%M UTC')}")
+    console.print(f"  Days remaining: {days_left}")
+
+    if days_left <= 7:
+        console.print("[yellow]Token expires within 7 days — refreshing...[/yellow]")
+        with ThreadsGraphClient() as refresh_client:
+            result = refresh_client.refresh_long_lived_token()
+        new_expires = result.get("expires_in", 0)
+        console.print(f"[green]Token refreshed! New token valid for {new_expires // 86400} days.[/green]")
+    else:
+        console.print(f"[green]Token is healthy — no refresh needed.[/green]")
+
+
 # ── competitor watch ───────────────────────────────────────
 
 competitor_app = typer.Typer(help="Competitor account watching & research")

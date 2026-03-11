@@ -59,6 +59,22 @@ class FollowerCorrelation:
         return self.avg_delta_above / self.avg_delta_below
 
 
+def _get_scheduled_date(record: Any) -> str | None:
+    """Extract YYYY-MM-DD from a PostRecord or dict's scheduled_at field."""
+    if isinstance(record, dict):
+        raw = record.get("scheduled_at", "")
+    else:
+        raw = getattr(record, "scheduled_at", "")
+    if not raw:
+        return None
+    try:
+        if isinstance(raw, datetime):
+            return raw.strftime("%Y-%m-%d")
+        return datetime.fromisoformat(str(raw)).strftime("%Y-%m-%d")
+    except (ValueError, TypeError):
+        return None
+
+
 class FollowerTracker:
     """Persistent daily follower snapshot manager."""
 
@@ -181,6 +197,88 @@ class FollowerTracker:
             days_above=len(above),
             days_below=len(below),
         )
+
+    def analyze_post_attribution(
+        self,
+        post_records: list,
+    ) -> dict[str, dict[str, float]]:
+        """Analyze which hooks and post_types correlate with follower growth.
+
+        For each day with follower growth (delta > 0), finds posts published
+        that day and the day before, then ranks hooks and post_types by
+        average follower delta.
+
+        Args:
+            post_records: List of PostRecord objects (or dicts with
+                          text, scheduled_at, post_type fields).
+
+        Returns:
+            Dict with two keys:
+              - "hook_attribution": {hook_name: avg_follower_delta}
+              - "type_attribution": {post_type: avg_follower_delta}
+            Sorted by avg_follower_delta descending within each sub-dict.
+        """
+        from .csv_analyzer import _detect_hooks
+
+        growth_days = [s for s in self._snapshots if s.delta > 0]
+        if not growth_days:
+            return {"hook_attribution": {}, "type_attribution": {}}
+
+        # Build date→posts index (keyed by YYYY-MM-DD)
+        date_posts: dict[str, list] = {}
+        for rec in post_records:
+            scheduled = _get_scheduled_date(rec)
+            if scheduled:
+                date_posts.setdefault(scheduled, []).append(rec)
+
+        # Accumulate deltas per hook and per post_type
+        hook_deltas: dict[str, list[int]] = {}
+        type_deltas: dict[str, list[int]] = {}
+
+        for snap in growth_days:
+            # Find posts from this day and the day before
+            try:
+                snap_date = datetime.strptime(snap.date, "%Y-%m-%d")
+            except ValueError:
+                continue
+            prev_date = (snap_date - timedelta(days=1)).strftime("%Y-%m-%d")
+            relevant_posts = date_posts.get(snap.date, []) + date_posts.get(prev_date, [])
+
+            if not relevant_posts:
+                continue
+
+            for rec in relevant_posts:
+                text = rec.get("text", "") if isinstance(rec, dict) else getattr(rec, "text", "")
+                post_type = rec.get("post_type", "reach") if isinstance(rec, dict) else getattr(rec, "post_type", "reach")
+
+                # Hook attribution
+                hooks = _detect_hooks(text) if text else []
+                for hook in hooks:
+                    hook_deltas.setdefault(hook, []).append(snap.delta)
+
+                # Post type attribution
+                type_deltas.setdefault(post_type, []).append(snap.delta)
+
+        # Average and sort
+        hook_attr = {
+            hook: round(sum(deltas) / len(deltas), 2)
+            for hook, deltas in hook_deltas.items()
+            if deltas
+        }
+        type_attr = {
+            ptype: round(sum(deltas) / len(deltas), 2)
+            for ptype, deltas in type_deltas.items()
+            if deltas
+        }
+
+        # Sort descending
+        hook_attr = dict(sorted(hook_attr.items(), key=lambda x: x[1], reverse=True))
+        type_attr = dict(sorted(type_attr.items(), key=lambda x: x[1], reverse=True))
+
+        return {
+            "hook_attribution": hook_attr,
+            "type_attribution": type_attr,
+        }
 
     @property
     def count(self) -> int:

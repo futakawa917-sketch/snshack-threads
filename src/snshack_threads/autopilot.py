@@ -232,6 +232,32 @@ def generate_daily_plan(
     except Exception:
         pass
 
+    # Content-engagement factor analysis
+    try:
+        from .content_analyzer import analyze_content_factors, summarize_top_factors
+        content_insights = analyze_content_factors(collected)
+        if content_insights:
+            summary_text = summarize_top_factors(content_insights, top_n=3)
+            logger.info("Content factor analysis:\n%s", summary_text)
+    except Exception as e:
+        logger.debug("Content factor analysis failed (non-critical): %s", e)
+
+    # Follower post attribution analysis
+    try:
+        from .follower_tracker import FollowerTracker
+        ft = FollowerTracker()
+        attribution = ft.analyze_post_attribution(collected)
+        hook_attr = attribution.get("hook_attribution", {})
+        type_attr = attribution.get("type_attribution", {})
+        if hook_attr:
+            top_hook = next(iter(hook_attr))
+            logger.info("Follower attribution: top hook=%s (avg delta=%.1f)",
+                        top_hook, hook_attr[top_hook])
+        if type_attr:
+            logger.info("Follower attribution by type: %s", type_attr)
+    except Exception as e:
+        logger.debug("Follower attribution failed (non-critical): %s", e)
+
     # Get AB test winners to inform hook selection
     ab_winning_hooks: list[str] = []
     try:

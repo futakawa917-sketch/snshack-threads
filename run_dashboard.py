@@ -59,6 +59,37 @@ def _ensure_profile():
 
 _ensure_profile()
 
+
+def _sync_repo_data():
+    """Copy data files from repo data/default/ to profile dir if missing."""
+    repo_data_dir = Path(__file__).parent / "data" / "default"
+    profile_dir = Path.home() / ".snshack-threads" / "profiles" / "default"
+
+    if not repo_data_dir.is_dir():
+        return
+
+    profile_dir.mkdir(parents=True, exist_ok=True)
+
+    data_files = [
+        "post_history.json",
+        "follower_snapshots.json",
+        "hook_theme_matrix.json",
+        "ab_tests.json",
+        "pending_posts.json",
+        "rate_limits.json",
+        "keyword_snapshots.json",
+    ]
+
+    for fname in data_files:
+        src = repo_data_dir / fname
+        dst = profile_dir / fname
+        if src.is_file() and not dst.is_file():
+            import shutil
+            shutil.copy2(src, dst)
+
+
+_sync_repo_data()
+
 from snshack_threads.dashboard import main
 
 main()

@@ -7,15 +7,19 @@ on:
     - cron: '0 * * * *'
   workflow_dispatch: # 手動実行も可能
 
-env:
-  THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
-  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-  TZ: Asia/Tokyo
-
 jobs:
   post:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      matrix:
+        profile: [default]
+      fail-fast: false
+
+    env:
+      THREADS_ACCESS_TOKEN: ${{ secrets[format('THREADS_TOKEN_{0}', matrix.profile)] || secrets.THREADS_ACCESS_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      TZ: Asia/Tokyo
 
     steps:
       - name: Checkout
@@ -30,20 +34,20 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[ai]"
 
-      - name: Restore profile data
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.snshack-threads
-          key: snshack-data-${{ github.run_id }}
-          restore-keys: snshack-data-
+      - name: Restore profile data from repo
+        run: |
+          mkdir -p ~/.snshack-threads/profiles/${{ matrix.profile }}
+          if [ -d data/${{ matrix.profile }} ]; then
+            cp -r data/${{ matrix.profile }}/* ~/.snshack-threads/profiles/${{ matrix.profile }}/ 2>/dev/null || true
+          fi
 
       - name: Setup profile
         run: |
-          mkdir -p ~/.snshack-threads/profiles/default
+          mkdir -p ~/.snshack-threads/profiles/${{ matrix.profile }}
           python -c "
           import json, os
           config = {
-              'profile_name': 'default',
+              'profile_name': '${{ matrix.profile }}',
               'threads_access_token': os.environ['THREADS_ACCESS_TOKEN'],
               'anthropic_api_key': os.environ['ANTHROPIC_API_KEY'],
               'genre': os.environ.get('PROFILE_GENRE', ''),
@@ -52,7 +56,7 @@ jobs:
               'posts_per_day': 5,
               'short_post_ratio': 0.5,
           }
-          config_path = os.path.expanduser('~/.snshack-threads/profiles/default/config.json')
+          config_path = os.path.expanduser('~/.snshack-threads/profiles/${{ matrix.profile }}/config.json')
           if os.path.exists(config_path):
               existing = json.loads(open(config_path).read())
               existing.update({k: v for k, v in config.items() if v})
@@ -61,16 +65,73 @@ jobs:
               json.dump(config, f, ensure_ascii=False, indent=2)
           "
         env:
-          PROFILE_GENRE: ${{ secrets.PROFILE_GENRE }}
-          RESEARCH_KEYWORDS: ${{ secrets.RESEARCH_KEYWORDS }}
+          PROFILE_GENRE: ${{ secrets[format('PROFILE_GENRE_{0}', matrix.profile)] || secrets.PROFILE_GENRE }}
+          RESEARCH_KEYWORDS: ${{ secrets[format('RESEARCH_KEYWORDS_{0}', matrix.profile)] || secrets.RESEARCH_KEYWORDS }}
 
       - name: Copy style guide and hooks
         run: |
-          [ -f data/style_guide.md ] && cp data/style_guide.md ~/.snshack-threads/profiles/default/
-          [ -f data/hooks.json ] && cp data/hooks.json ~/.snshack-threads/profiles/default/
+          PROFILE_DATA="data/${{ matrix.profile }}"
+          PROFILE_DIR=~/.snshack-threads/profiles/${{ matrix.profile }}
+          # プロファイル固有のデータディレクトリを優先、なければルートのdataを使用
+          if [ -d "$PROFILE_DATA" ]; then
+            [ -f "$PROFILE_DATA/style_guide.md" ] && cp "$PROFILE_DATA/style_guide.md" "$PROFILE_DIR/"
+            [ -f "$PROFILE_DATA/hooks.json" ] && cp "$PROFILE_DATA/hooks.json" "$PROFILE_DIR/"
+          else
+            [ -f data/style_guide.md ] && cp data/style_guide.md "$PROFILE_DIR/"
+            [ -f data/hooks.json ] && cp data/hooks.json "$PROFILE_DIR/"
+          fi
           true
 
+      - name: Check token expiry
+        id: token_check
+        run: |
+          python -c "
+          import os, json
+          from snshack_threads.threads_api import ThreadsGraphClient
+
+          try:
+              with ThreadsGraphClient() as client:
+                  info = client.get_token_info()
+                  expires_at = info.get('expires_at', 0)
+                  if expires_at:
+                      import time
+                      remaining = expires_at - int(time.time())
+                      days_left = remaining // 86400
+                      print(f'Token expires in {days_left} days')
+                      if days_left <= 7:
+                          print(f'::warning::Token for profile ${{ matrix.profile }} expires in {days_left} days!')
+                          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                              f.write(f'token_expiring=true\n')
+                              f.write(f'token_days_left={days_left}\n')
+                      else:
+                          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                              f.write('token_expiring=false\n')
+                              f.write(f'token_days_left={days_left}\n')
+                  else:
+                      print('Token expiry info not available')
+                      with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                          f.write('token_expiring=false\n')
+                          f.write('token_days_left=-1\n')
+          except Exception as e:
+              print(f'Token check failed: {e}')
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  f.write('token_expiring=false\n')
+                  f.write('token_days_left=-1\n')
+          "
+
+      - name: Notify token expiry warning
+        if: steps.token_check.outputs.token_expiring == 'true'
+        run: |
+          if [ -n "$SLACK_WEBHOOK_URL" ]; then
+            curl -s -X POST "$SLACK_WEBHOOK_URL" \
+              -H 'Content-type: application/json' \
+              -d "{\"text\":\"⚠️ トークン期限切れ警告\\nProfile: ${{ matrix.profile }}\\nトークンの有効期限が残り ${{ steps.token_check.outputs.token_days_left }} 日です。\\n早めにトークンを更新してください。\"}"
+          fi
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
       - name: Smart publish
+        id: publish
         run: |
           python -c "
           import json, os
@@ -78,7 +139,7 @@ jobs:
           from pathlib import Path
           from snshack_threads.config import get_settings
 
-          settings = get_settings(profile='default')
+          settings = get_settings(profile='${{ matrix.profile }}')
           pending_path = settings.profile_dir / 'pending_posts.json'
           now = datetime.now()
           current_hour = now.hour
@@ -105,11 +166,11 @@ jobs:
           if need_morning:
               print('=== Running morning tasks ===')
               import subprocess
-              subprocess.run(['snshack', '--profile', 'default', 'collect-threads'], check=False)
-              subprocess.run(['snshack', '--profile', 'default', 'collect-early'], check=False)
-              subprocess.run(['snshack', '--profile', 'default', 'track-followers'], check=False)
+              subprocess.run(['snshack', '--profile', '${{ matrix.profile }}', 'collect-threads'], check=False)
+              subprocess.run(['snshack', '--profile', '${{ matrix.profile }}', 'collect-early'], check=False)
+              subprocess.run(['snshack', '--profile', '${{ matrix.profile }}', 'track-followers'], check=False)
               print('=== Generating daily plan ===')
-              subprocess.run(['snshack', '--profile', 'default', 'autopilot'], check=True)
+              subprocess.run(['snshack', '--profile', '${{ matrix.profile }}', 'autopilot'], check=True)
 
           # ── Step 2: 過去スロットの再分散 ──
           if pending_path.exists():
@@ -173,14 +234,60 @@ jobs:
           print(f'Text: {entry[\"text\"][:80]}...')
 
           from snshack_threads.threads_api import ThreadsGraphClient
+
+          # ── Duplicate check ──
+          def _char_ngrams(text, n=3):
+              text = text.strip()
+              if len(text) < n:
+                  return {text} if text else set()
+              return {text[i:i+n] for i in range(len(text) - n + 1)}
+
+          def is_duplicate(new_text, recent_posts, threshold=0.6):
+              new_ng = _char_ngrams(new_text)
+              if not new_ng:
+                  return False, None
+              for p in recent_posts:
+                  old_text = (p.get('text') or '').strip()
+                  if not old_text:
+                      continue
+                  old_ng = _char_ngrams(old_text)
+                  if not old_ng:
+                      continue
+                  jaccard = len(new_ng & old_ng) / len(new_ng | old_ng)
+                  if jaccard > threshold:
+                      return True, old_text
+              return False, None
+
+          skip_publish = False
           try:
               with ThreadsGraphClient() as client:
-                  post_id = client.create_text_post(entry['text'])
-                  entries[idx]['status'] = 'published'
-                  print(f'Published! Post ID: {post_id}')
+                  recent = client.get_my_posts(limit=10)
+                  dup_found, dup_text = is_duplicate(entry['text'], recent)
+                  if dup_found:
+                      print(f'WARNING: Duplicate detected! Similar to: {dup_text[:80]}...')
+                      print('Skipping publish to avoid Threads suppression.')
+                      entries[idx]['status'] = 'skipped: duplicate'
+                      skip_publish = True
           except Exception as e:
-              entries[idx]['status'] = f'failed: {e}'
-              print(f'Failed: {e}')
+              print(f'Warning: duplicate check failed ({e}), proceeding with publish')
+
+          if not skip_publish:
+              try:
+                  with ThreadsGraphClient() as client:
+                      post_id = client.create_text_post(entry['text'])
+                      entries[idx]['status'] = 'published'
+                      print(f'Published! Post ID: {post_id}')
+                      # サマリー出力
+                      with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                          f.write(f'publish_status=success\n')
+                          f.write(f'post_hook={entry[\"hook\"]}\n')
+              except Exception as e:
+                  entries[idx]['status'] = f'failed: {e}'
+                  print(f'Failed: {e}')
+                  with open(os.environ.get('GITHUB_OUTPUT', '/dev/null'), 'a') as f:
+                      f.write(f'publish_status=failed\n')
+                      f.write(f'publish_error={e}\n')
+                  raise
 
           pending_path.write_text(
               json.dumps(entries, ensure_ascii=False, indent=2), encoding='utf-8'
@@ -191,9 +298,44 @@ jobs:
           print(f'Published today: {published_today}/5, Remaining: {remaining}')
           "
 
-      - name: Save profile data
+      - name: Success summary
+        if: success()
+        run: |
+          echo "## 実行サマリー - Profile: ${{ matrix.profile }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **プロファイル**: ${{ matrix.profile }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **ステータス**: 成功" >> $GITHUB_STEP_SUMMARY
+          echo "- **実行時刻**: $(date '+%Y-%m-%d %H:%M:%S %Z')" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.publish.outputs.publish_status }}" = "success" ]; then
+            echo "- **投稿**: ${{ steps.publish.outputs.post_hook }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **投稿**: スケジュール外のため投稿なし" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ "${{ steps.token_check.outputs.token_expiring }}" = "true" ]; then
+            echo "- **⚠️ トークン警告**: 残り ${{ steps.token_check.outputs.token_days_left }} 日" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          if [ -n "$SLACK_WEBHOOK_URL" ]; then
+            curl -s -X POST "$SLACK_WEBHOOK_URL" \
+              -H 'Content-type: application/json' \
+              -d "{\"text\":\"⚠️ snshack-threads 投稿エラー\\nProfile: ${{ matrix.profile }}\\nRun: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\"}"
+          fi
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Save profile data to repo
         if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.snshack-threads
-          key: snshack-data-${{ github.run_id }}
+        run: |
+          mkdir -p data/${{ matrix.profile }}
+          for f in post_history.json follower_snapshots.json hook_theme_matrix.json ab_tests.json pending_posts.json rate_limits.json keyword_snapshots.json; do
+            src="$HOME/.snshack-threads/profiles/${{ matrix.profile }}/$f"
+            [ -f "$src" ] && cp "$src" data/${{ matrix.profile }}/
+          done
+          git config user.name "snshack-bot"
+          git config user.email "bot@snshack.local"
+          git add data/
+          git diff --cached --quiet || git commit -m "auto: update ${{ matrix.profile }} profile data [skip ci]"
+          git push || echo "Push failed (concurrent update?)"
