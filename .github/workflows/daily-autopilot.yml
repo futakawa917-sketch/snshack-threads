@@ -39,10 +39,21 @@ jobs:
 
       - name: Restore profile data from repo
         run: |
-          mkdir -p ~/.snshack-threads/profiles/${{ matrix.profile }}
+          PROFILE_DIR=~/.snshack-threads/profiles/${{ matrix.profile }}
+          mkdir -p "$PROFILE_DIR"
           if [ -d data/${{ matrix.profile }} ]; then
-            cp -r data/${{ matrix.profile }}/* ~/.snshack-threads/profiles/${{ matrix.profile }}/ 2>/dev/null || true
+            cp -r data/${{ matrix.profile }}/* "$PROFILE_DIR/" 2>/dev/null || true
           fi
+          # データ整合性チェック: JSONが壊れていないか確認
+          for f in post_history.json follower_snapshots.json pending_posts.json; do
+            fp="$PROFILE_DIR/$f"
+            if [ -f "$fp" ]; then
+              python -c "import json; json.loads(open('$fp').read())" 2>/dev/null || {
+                echo "WARNING: $f is corrupted, removing"
+                rm "$fp"
+              }
+            fi
+          done
 
       - name: Setup profile
         run: |
@@ -340,6 +351,24 @@ jobs:
           git config user.name "snshack-bot"
           git config user.email "bot@snshack.local"
           git add data/
-          git diff --cached --quiet || git commit -m "auto: update ${{ matrix.profile }} profile data [skip ci]"
-          git pull --rebase origin main || true
-          git push || echo "Push failed (concurrent update?)"
+          if ! git diff --cached --quiet; then
+            git commit -m "auto: update ${{ matrix.profile }} profile data [skip ci]"
+            # リトライ付きpush（最大3回）
+            for i in 1 2 3; do
+              git pull --rebase origin main 2>/dev/null || true
+              if git push; then
+                echo "Push succeeded on attempt $i"
+                break
+              fi
+              echo "Push failed (attempt $i/3), retrying..."
+              sleep 5
+            done
+          fi
+
+      - name: Backup data to artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: profile-data-${{ matrix.profile }}-${{ github.run_id }}
+          path: data/${{ matrix.profile }}/
+          retention-days: 90
