@@ -79,7 +79,7 @@ jobs:
           true
 
       - name: Morning tasks (first run only)
-        if: github.event.schedule == '30 22 * * *' || github.event_name == 'workflow_dispatch'
+        if: github.event.schedule == '30 22 * * *'
         run: |
           echo "=== Morning: Collect metrics ==="
           snshack --profile default collect-threads || echo "Collect skipped"
@@ -88,6 +88,27 @@ jobs:
 
           echo "=== Morning: Generate daily plan ==="
           snshack --profile default autopilot
+
+      - name: Generate plan if no pending posts
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          PENDING=$(python -c "
+          import json; from pathlib import Path
+          from snshack_threads.config import get_settings
+          s = get_settings(profile='default')
+          p = s.profile_dir / 'pending_posts.json'
+          if not p.exists(): print('0'); exit()
+          entries = json.loads(p.read_text())
+          print(sum(1 for e in entries if e['status'] == 'pending'))
+          " 2>/dev/null || echo "0")
+          echo "Pending posts: $PENDING"
+          if [ "$PENDING" = "0" ]; then
+            echo "No pending posts, generating new plan..."
+            snshack --profile default collect-threads || echo "Collect skipped"
+            snshack --profile default autopilot
+          else
+            echo "Skipping plan generation, $PENDING posts already pending"
+          fi
 
       - name: Publish next post
         run: |
