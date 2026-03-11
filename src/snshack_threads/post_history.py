@@ -313,6 +313,48 @@ class PostHistory:
 
         return similar
 
+    def archive_old_records(self, keep_days: int = 365) -> int:
+        """Move records older than keep_days to an archive file.
+
+        Archives to {history_path}.archive.json. Returns count of archived records.
+        """
+        cutoff = datetime.now() - timedelta(days=keep_days)
+        keep: list[PostRecord] = []
+        archive: list[PostRecord] = []
+
+        for r in self._records:
+            try:
+                scheduled = datetime.fromisoformat(r.scheduled_at)
+                if scheduled < cutoff:
+                    archive.append(r)
+                else:
+                    keep.append(r)
+            except ValueError:
+                keep.append(r)
+
+        if not archive:
+            return 0
+
+        # Append to archive file
+        archive_path = self._path.with_suffix(".archive.json")
+        existing_archive: list[dict] = []
+        if archive_path.exists():
+            try:
+                existing_archive = json.loads(archive_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        existing_archive.extend([r.to_dict() for r in archive])
+        archive_path.write_text(
+            json.dumps(existing_archive, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        self._records = keep
+        self._save()
+        logger.info("Archived %d old records (kept %d)", len(archive), len(keep))
+        return len(archive)
+
     @property
     def count(self) -> int:
         return len(self._records)
