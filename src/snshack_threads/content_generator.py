@@ -63,36 +63,70 @@ def _get_anthropic_client():
 
 
 def _build_system_prompt(settings=None, profile: str | None = None) -> str:
-    """Build the system prompt with style guide and reference examples.
+    """Build the system prompt with style guide, learning data, and reference examples.
 
     Uses 3-tier data resolution for reference examples:
     account → genre → universal.
+    Integrates content_analyzer, element_analyzer, hook_theme_matrix insights.
     """
     if settings is None:
         from .config import get_settings
         settings = get_settings(profile=profile)
 
     parts = [
-        "あなたはThreads (Meta) の投稿を作成するプロのSNSライターです。",
-        "以下のルールを守ってください：",
+        "あなたはThreads (Meta) でバズを狙うプロのSNSライターです。",
+        "",
+        "# Threadsアルゴリズムの特性",
+        "- 投稿後1〜3時間の初速（リプライ・いいね率）でリーチが決まる",
+        "- リプライが最重要シグナル。リプライが付く投稿は10倍以上リーチする",
+        "- 保存・リポストも評価されるが、リプライ > いいね > 保存 の優先度",
+        "- テキスト重視プラットフォーム。画像なしでもバズる",
+        "",
+        "# 絶対ルール",
         "- 500文字以内",
-        "- 外部リンク(URL)は絶対に含めない",
-        "- LINE誘導は含めない",
-        "- プロフィールリンク誘導は含めない",
-        "- 1行目に強いフック（読者の注意を引く文）を置く（数字・疑問形・意外性・共感のいずれか）",
-        "- 末尾にリプライを誘発する具体的な質問CTAを入れる（例：「あなたはどう思う？」「経験をコメントで教えて」）",
-        "- 「30秒読ませる」意識で適度な長さを保つ（短すぎる一文は避ける）",
-        "- 一次情報（自分の体験・実績ベース）の語り口を使う",
-        "- Threadsはテキスト重視のプラットフォーム。会話を生む投稿がアルゴリズムに評価される",
+        "- URL・外部リンク禁止（リーチが激減する）",
+        "- LINE誘導・プロフィール誘導禁止",
+        "- ハッシュタグ禁止（Threadsでは逆効果）",
+        "",
+        "# 投稿構造のルール（これが最重要）",
+        "",
+        "## 1行目（フック）= 命",
+        "- スクロールを止める一文。ここで9割決まる",
+        "- パターン: 数字で驚かせる / 常識を否定する / 強い疑問を投げる / 危機感を煽る",
+        "- 悪い例: 「補助金について解説します」→ スルーされる",
+        "- 良い例: 「補助金で300万円もらった会社が、翌年に返金命令を食らった話」",
+        "",
+        "## 2〜3行目（引き込み）",
+        "- 1行目の「なぜ？」「どういうこと？」に答える導入",
+        "- 自分の実体験・実績を入れて信頼性を担保する",
+        "- 「私が〇〇した結果」「〇年間〇〇してきた中で」",
+        "",
+        "## 本文（価値提供）",
+        "- 読者が「保存したい」と思う具体的な情報を入れる",
+        "- 箇条書き（✓や・）で読みやすく構造化する",
+        "- 1段落3行以内。長い段落は離脱される",
+        "- 空行で間を作る（詰め込みすぎない）",
+        "",
+        "## 最終行（CTA）= リプライを生む仕掛け",
+        "- 「答えやすい具体的な質問」を置く",
+        "- 悪い例: 「どう思いますか？」→ 答えにくい",
+        "- 良い例: 「あなたの業界で一番使える補助金はどれ？」→ 具体的に答えられる",
+        "- 二択・経験談を求める質問が効果的",
+        "",
+        "# 文体ルール",
+        "- 「です・ます」より「だ・である」混じりの方がバズりやすい",
+        "- 断言する。「かもしれません」「可能性があります」は弱い",
+        "- 一次情報（自分の体験・実績ベース）で語る。評論家口調は避ける",
+        "- 改行を効果的に使う。1行ずつ区切って読みやすくする",
     ]
 
+    # Style guide
     style = settings.load_style_guide()
     if style:
-        parts.append(f"\nスタイルガイド:\n{style}")
+        parts.append(f"\n# スタイルガイド（このアカウント固有）\n{style}")
 
     # Resolve reference examples with 3-tier fallback
     from .data_resolver import resolve_examples
-
     resolved = resolve_examples(profile=profile, n=5)
     if resolved.examples:
         tier_label = {
@@ -101,11 +135,34 @@ def _build_system_prompt(settings=None, profile: str | None = None) -> str:
             "universal": "全ジャンルの高パフォーマンス投稿",
         }
         label = tier_label.get(resolved.tier.value, "参考投稿")
-        parts.append(f"\n参考投稿（{label}）:")
+        parts.append(f"\n# 参考投稿（{label}）")
+        parts.append("以下の投稿の「1行目の構造」「改行のリズム」「CTAの具体性」を分析し、同じレベルの品質を目指してください：")
         for i, ex in enumerate(resolved.examples, 1):
-            parts.append(f"  {i}. {ex[:200]}")
+            parts.append(f"\n【例{i}】\n{ex[:300]}")
 
-    # Add element analysis insights if available
+    # Content factor analysis (from content_analyzer)
+    try:
+        from .content_analyzer import analyze_content_factors, summarize_top_factors
+        from .post_history import PostHistory
+        from .config import get_settings as _gs0
+        _s0 = _gs0(profile=profile)
+        _h0 = PostHistory(history_path=_s0.profile_dir / "post_history.json")
+        collected = [r for r in _h0.get_all() if r.has_metrics]
+        content_insights = analyze_content_factors(collected)
+        if content_insights:
+            parts.append("\n# データ分析: 何がviewsに効くか")
+            parts.append("このアカウントの実績データから判明した事実。これに従って投稿を作成せよ：")
+            for ci in content_insights[:8]:
+                direction = "↑効果あり" if ci.lift_vs_average >= 1.0 else "↓効果なし"
+                pct = (ci.lift_vs_average - 1.0) * 100
+                parts.append(
+                    f"  - {ci.factor}={ci.value_range}: "
+                    f"平均{ci.avg_views:.0f}views ({direction}, 全体比{pct:+.0f}%, {ci.sample_count}件)"
+                )
+    except Exception:
+        pass
+
+    # Element analysis insights
     try:
         from .element_analyzer import analyze_elements_batch
         from .post_history import PostHistory
@@ -114,19 +171,19 @@ def _build_system_prompt(settings=None, profile: str | None = None) -> str:
         _history = PostHistory(history_path=_settings.profile_dir / "post_history.json")
         element_stats = analyze_elements_batch(_history)
         if element_stats:
-            parts.append("\n構造要素の分析結果（効果が高い順）:")
+            parts.append("\n# データ分析: 構造要素の効果")
             for stat in element_stats[:6]:
                 category, value = stat.pattern.split(":", 1)
                 label_map = {
-                    "length": "文字数", "cta": "CTA", "emoji": "絵文字",
+                    "length": "文字数", "cta": "CTA種別", "emoji": "絵文字",
                     "question": "質問形", "numbers": "数字使用",
                 }
                 cat_label = label_map.get(category, category)
                 parts.append(f"  - {cat_label}={value}: 平均{stat.avg_views:.0f}views ({stat.post_count}件)")
     except Exception:
-        pass  # Element analysis is optional
+        pass
 
-    # Add hook × theme matrix insights if available
+    # Hook × theme matrix insights
     try:
         from .hook_theme_matrix import load_matrix, get_top_combinations
         from .config import get_settings as _gs2
@@ -134,14 +191,15 @@ def _build_system_prompt(settings=None, profile: str | None = None) -> str:
         matrix = load_matrix(_settings2.profile_dir)
         top_combos = get_top_combinations(matrix, n=5)
         if top_combos:
-            parts.append("\nフック×テーマの効果的な組み合わせ:")
+            parts.append("\n# データ分析: フック×テーマの勝ちパターン")
+            parts.append("以下の組み合わせが実績で証明済み。積極的に使え：")
             for combo in top_combos:
                 parts.append(
-                    f"  - [{combo['hook_type']}]×[{combo['theme']}]: "
+                    f"  - 【{combo['hook_type']}】×【{combo['theme']}】: "
                     f"平均{combo['avg_views']:.0f}views ({combo['count']}件)"
                 )
     except Exception:
-        pass  # Hook-theme matrix is optional
+        pass
 
     return "\n".join(parts)
 
@@ -166,16 +224,22 @@ def generate_post(
 
     prompt_parts = [f"以下のトピックでThreads投稿を1つ作成してください。\n\nトピック: {topic}"]
     if hook_type:
-        prompt_parts.append(f"フックパターン: {hook_type}")
+        prompt_parts.append(f"\nフックパターン: {hook_type}")
+        prompt_parts.append(f"→ 1行目で必ず「{hook_type}」のテクニックを使うこと。")
     if tone:
-        prompt_parts.append(f"トーン: {tone}")
+        prompt_parts.append(f"\nトーン指示: {tone}")
 
     if length == "short":
-        prompt_parts.append("文字数: 1〜2行（50文字以内）の短い投稿にしてください。キレのある一言で刺さる内容に。")
+        prompt_parts.append("\n【短文投稿】1〜2行（50文字以内）。キレのある一言で刺さる内容。余計な説明は一切不要。")
     elif length == "long":
-        prompt_parts.append("文字数: 300〜500文字の長めの投稿にしてください。")
+        prompt_parts.append("\n【長文投稿】300〜500文字。段落分け・箇条書きで読みやすく構造化すること。")
+    else:
+        prompt_parts.append("\n【中文投稿】100〜300文字。読み応えがありつつスクロールで読み切れる長さ。")
 
-    prompt_parts.append("\n投稿テキストのみを出力してください。説明や前置きは不要です。")
+    prompt_parts.append("\n重要:")
+    prompt_parts.append("- 1行目は「スクロールを止めるフック」。ここに全力を注げ")
+    prompt_parts.append("- 最終行は「リプライしたくなる具体的な質問」")
+    prompt_parts.append("- 投稿テキストのみを出力。説明・前置き・「」の囲みは不要")
 
     message = _call_with_retry(
         client, _build_system_prompt(profile=profile),
