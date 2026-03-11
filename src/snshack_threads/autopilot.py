@@ -736,10 +736,6 @@ def execute_plan(
                 if i < len(slots):
                     h, m = slots[i]
                     results.append(f"Queued #{i + 1}: {post['hook']} → {h:02d}:{m:02d}")
-
-            # Publish any posts whose time has already passed
-            immediate = publish_due_posts(profile=profile or "default")
-            results.extend(immediate)
         except Exception as e:
             results.append(f"Failed (Threads): {e}")
 
