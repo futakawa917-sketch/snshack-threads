@@ -7,6 +7,9 @@ on:
     - cron: '0 * * * *'
   workflow_dispatch: # 手動実行も可能
 
+permissions:
+  contents: write
+
 jobs:
   post:
     runs-on: ubuntu-latest
@@ -100,21 +103,21 @@ jobs:
                       print(f'Token expires in {days_left} days')
                       if days_left <= 7:
                           print(f'::warning::Token for profile ${{ matrix.profile }} expires in {days_left} days!')
-                          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                          with open(os.environ.get('GITHUB_OUTPUT', '/dev/null'), 'a') as f:
                               f.write(f'token_expiring=true\n')
                               f.write(f'token_days_left={days_left}\n')
                       else:
-                          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                          with open(os.environ.get('GITHUB_OUTPUT', '/dev/null'), 'a') as f:
                               f.write('token_expiring=false\n')
                               f.write(f'token_days_left={days_left}\n')
                   else:
                       print('Token expiry info not available')
-                      with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                      with open(os.environ.get('GITHUB_OUTPUT', '/dev/null'), 'a') as f:
                           f.write('token_expiring=false\n')
                           f.write('token_days_left=-1\n')
           except Exception as e:
               print(f'Token check failed: {e}')
-              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              with open(os.environ.get('GITHUB_OUTPUT', '/dev/null'), 'a') as f:
                   f.write('token_expiring=false\n')
                   f.write('token_days_left=-1\n')
           "
@@ -181,8 +184,8 @@ jobs:
                   start_h = current_hour + 1
                   end_h = 23
                   n = len(all_pending)
-                  if n > 0 and end_h > start_h:
-                      step = max(1, (end_h - start_h) // n)
+                  if n > 0 and end_h >= start_h:
+                      step = max(1, (end_h - start_h + 1) // n)
                       for i, e in enumerate(all_pending):
                           new_hour = min(start_h + i * step, end_h)
                           e['scheduled_hour'] = new_hour
@@ -278,7 +281,7 @@ jobs:
                       entries[idx]['status'] = 'published'
                       print(f'Published! Post ID: {post_id}')
                       # サマリー出力
-                      with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                      with open(os.environ.get('GITHUB_OUTPUT', '/dev/null'), 'a') as f:
                           f.write(f'publish_status=success\n')
                           f.write(f'post_hook={entry[\"hook\"]}\n')
               except Exception as e:
@@ -338,4 +341,5 @@ jobs:
           git config user.email "bot@snshack.local"
           git add data/
           git diff --cached --quiet || git commit -m "auto: update ${{ matrix.profile }} profile data [skip ci]"
+          git pull --rebase origin main || true
           git push || echo "Push failed (concurrent update?)"

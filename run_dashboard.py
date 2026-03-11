@@ -61,14 +61,12 @@ _ensure_profile()
 
 
 def _sync_repo_data():
-    """Copy data files from repo data/default/ to profile dir if missing."""
-    repo_data_dir = Path(__file__).parent / "data" / "default"
-    profile_dir = Path.home() / ".snshack-threads" / "profiles" / "default"
+    """Copy data files from repo data/{profile}/ to profile dirs if missing."""
+    import shutil
 
-    if not repo_data_dir.is_dir():
+    repo_data_root = Path(__file__).parent / "data"
+    if not repo_data_root.is_dir():
         return
-
-    profile_dir.mkdir(parents=True, exist_ok=True)
 
     data_files = [
         "post_history.json",
@@ -80,12 +78,18 @@ def _sync_repo_data():
         "keyword_snapshots.json",
     ]
 
-    for fname in data_files:
-        src = repo_data_dir / fname
-        dst = profile_dir / fname
-        if src.is_file() and not dst.is_file():
-            import shutil
-            shutil.copy2(src, dst)
+    for profile_data_dir in repo_data_root.iterdir():
+        if not profile_data_dir.is_dir():
+            continue
+        profile_name = profile_data_dir.name
+        profile_dir = Path.home() / ".snshack-threads" / "profiles" / profile_name
+        profile_dir.mkdir(parents=True, exist_ok=True)
+
+        for fname in data_files:
+            src = profile_data_dir / fname
+            dst = profile_dir / fname
+            if src.is_file() and not dst.is_file():
+                shutil.copy2(src, dst)
 
 
 _sync_repo_data()
