@@ -111,6 +111,28 @@ jobs:
               print('=== Generating daily plan ===')
               subprocess.run(['snshack', '--profile', 'default', 'autopilot'], check=True)
 
+              # 生成後、過去の時間帯があれば残り時間に再分散
+              if pending_path.exists():
+                  entries_fix = json.loads(pending_path.read_text(encoding='utf-8'))
+                  past = [e for e in entries_fix if e['status'] == 'pending' and e['scheduled_hour'] <= current_hour]
+                  if past:
+                      future = [e for e in entries_fix if e['status'] == 'pending' and e['scheduled_hour'] > current_hour]
+                      all_pending = past + future
+                      # 現在時刻+1時間 〜 23時の間で均等に分散
+                      start_h = current_hour + 1
+                      end_h = 23
+                      n = len(all_pending)
+                      if n > 0 and end_h > start_h:
+                          step = max(1, (end_h - start_h) // n)
+                          for i, e in enumerate(all_pending):
+                              new_hour = min(start_h + i * step, end_h)
+                              e['scheduled_hour'] = new_hour
+                              e['scheduled_minute'] = 0
+                          pending_path.write_text(
+                              json.dumps(entries_fix, ensure_ascii=False, indent=2), encoding='utf-8'
+                          )
+                          print(f'Redistributed {n} posts: {[e[\"scheduled_hour\"] for e in all_pending]}')
+
           # ── Step 2: 投稿すべきか判断 ──
           if not pending_path.exists():
               print('No pending file after plan generation')
