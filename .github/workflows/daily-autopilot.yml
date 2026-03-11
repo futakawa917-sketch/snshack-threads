@@ -18,6 +18,7 @@ on:
 env:
   THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
   ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  TZ: Asia/Tokyo
 
 jobs:
   post:
@@ -59,7 +60,6 @@ jobs:
               'posts_per_day': 5,
               'short_post_ratio': 0.5,
           }
-          # Merge with existing config (preserve post_history path etc.)
           config_path = os.path.expanduser('~/.snshack-threads/profiles/default/config.json')
           if os.path.exists(config_path):
               existing = json.loads(open(config_path).read())
@@ -89,18 +89,51 @@ jobs:
           echo "=== Morning: Generate daily plan ==="
           snshack --profile default autopilot
 
-      - name: Publish due posts
+      - name: Publish next post
         run: |
           python -c "
-          from snshack_threads.timed_publisher import publish_due_posts, get_pending_count
-          pending = get_pending_count(profile='default')
-          print(f'Pending posts: {pending}')
-          if pending > 0:
-              results = publish_due_posts(profile='default')
-              for r in results:
-                  print(r)
-          else:
+          import json, os
+          from pathlib import Path
+          from snshack_threads.threads_api import ThreadsGraphClient
+          from snshack_threads.config import get_settings
+
+          settings = get_settings(profile='default')
+          pending_path = settings.profile_dir / 'pending_posts.json'
+
+          if not pending_path.exists():
+              print('No pending file found')
+              exit(0)
+
+          entries = json.loads(pending_path.read_text(encoding='utf-8'))
+          pending = [e for e in entries if e['status'] == 'pending']
+
+          if not pending:
               print('No pending posts')
+              exit(0)
+
+          # Publish the first pending post
+          entry = pending[0]
+          idx = entries.index(entry)
+
+          print(f'Publishing: {entry[\"hook\"]} ({entry[\"scheduled_hour\"]:02d}:{entry[\"scheduled_minute\"]:02d})')
+          print(f'Text: {entry[\"text\"][:80]}...')
+
+          try:
+              with ThreadsGraphClient() as client:
+                  post_id = client.create_text_post(entry['text'])
+                  entries[idx]['status'] = 'published'
+                  print(f'Published! Post ID: {post_id}')
+          except Exception as e:
+              entries[idx]['status'] = f'failed: {e}'
+              print(f'Failed: {e}')
+
+          # Save updated status
+          pending_path.write_text(
+              json.dumps(entries, ensure_ascii=False, indent=2), encoding='utf-8'
+          )
+
+          remaining = sum(1 for e in entries if e['status'] == 'pending')
+          print(f'Remaining: {remaining} posts')
           "
 
       - name: Save profile data
