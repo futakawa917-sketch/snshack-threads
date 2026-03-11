@@ -39,11 +39,11 @@ jobs:
         run: pip install -e ".[ai]"
 
       - name: Restore profile data
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.snshack-threads
-          key: snshack-data-default-v1
-          restore-keys: snshack-data-default-
+          key: snshack-data-${{ github.run_id }}
+          restore-keys: snshack-data-
 
       - name: Setup profile
         run: |
@@ -141,4 +141,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/.snshack-threads
-          key: snshack-data-default-v1
+          key: snshack-data-${{ github.run_id }}
