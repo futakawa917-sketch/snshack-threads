@@ -2,9 +2,9 @@ name: Daily Autopilot
 
 on:
   schedule:
-    # 毎時0分に実行 (JST 6:00-23:00 = UTC 21:00-14:00)
-    # GitHub Actionsは最大15分の遅延があるが、毎時実行なので確実にカバー
-    - cron: '0 * * * *'
+    # 毎日 JST 7:00 に1回だけ実行 (UTC 22:00)
+    # AIで投稿生成 → Metricoolで5件を予約投稿
+    - cron: '0 22 * * *'
   workflow_dispatch: # 手動実行も可能
 
 permissions:
@@ -26,6 +26,9 @@ jobs:
     env:
       THREADS_ACCESS_TOKEN: ${{ secrets[format('THREADS_TOKEN_{0}', matrix.profile)] || secrets.THREADS_ACCESS_TOKEN }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      METRICOOL_USER_TOKEN: ${{ secrets.METRICOOL_USER_TOKEN }}
+      METRICOOL_USER_ID: ${{ secrets.METRICOOL_USER_ID }}
+      METRICOOL_BLOG_ID: ${{ secrets.METRICOOL_BLOG_ID }}
       TZ: Asia/Tokyo
 
     steps:
@@ -68,6 +71,9 @@ jobs:
               'profile_name': '${{ matrix.profile }}',
               'threads_access_token': os.environ['THREADS_ACCESS_TOKEN'],
               'anthropic_api_key': os.environ['ANTHROPIC_API_KEY'],
+              'user_token': os.environ.get('METRICOOL_USER_TOKEN', ''),
+              'user_id': os.environ.get('METRICOOL_USER_ID', ''),
+              'blog_id': os.environ.get('METRICOOL_BLOG_ID', ''),
               'genre': os.environ.get('PROFILE_GENRE', ''),
               'research_keywords': os.environ.get('RESEARCH_KEYWORDS', ''),
               'timezone': 'Asia/Tokyo',
@@ -163,7 +169,7 @@ jobs:
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
-      - name: Smart publish
+      - name: Generate and schedule via Metricool
         id: publish
         run: |
           python -c "
@@ -175,34 +181,39 @@ jobs:
           settings = get_settings(profile='${{ matrix.profile }}')
           pending_path = settings.profile_dir / 'pending_posts.json'
           now = datetime.now()
-          current_hour = now.hour
-          current_minute = now.minute
           today_str = date.today().isoformat()
 
           print(f'Current time: {now.strftime(\"%Y-%m-%d %H:%M:%S %Z\")}')
 
-          # ── Step 1: 朝の処理 (6-8時台、またはpending無し) ──
-          need_morning = False
+          # ── Step 1: データ収集 & 投稿生成 ──
+          need_generate = False
           if pending_path.exists():
               entries = json.loads(pending_path.read_text(encoding='utf-8'))
-              # pending_postsが今日の分かチェック
               if entries and entries[0].get('date') != today_str:
-                  need_morning = True
+                  need_generate = True
                   print('Pending posts are from a previous day, regenerating...')
               elif not entries:
-                  need_morning = True
+                  need_generate = True
                   print('Pending file is empty')
+              else:
+                  # 今日分が既にscheduled済みならスキップ
+                  already_scheduled = any(e.get('status') == 'scheduled_metricool' for e in entries)
+                  if already_scheduled:
+                      print('Today posts already scheduled via Metricool. Nothing to do.')
+                      with open(os.environ.get('GITHUB_OUTPUT', '/dev/null'), 'a') as f:
+                          f.write('publish_status=already_scheduled\n')
+                      exit(0)
+                  need_generate = not any(e['status'] == 'pending' for e in entries)
           else:
-              need_morning = True
+              need_generate = True
               print('No pending file found')
 
-          if need_morning:
+          if need_generate:
               print('=== Running morning tasks ===')
               import subprocess
               subprocess.run(['snshack', '--profile', '${{ matrix.profile }}', 'collect-threads'], check=False)
               subprocess.run(['snshack', '--profile', '${{ matrix.profile }}', 'collect-early'], check=False)
               subprocess.run(['snshack', '--profile', '${{ matrix.profile }}', 'track-followers'], check=False)
-              # post_history.jsonのアーカイブ（365日超を別ファイルに移動）
               try:
                   from snshack_threads.post_history import PostHistory
                   ph = PostHistory(history_path=settings.profile_dir / 'post_history.json')
@@ -214,7 +225,7 @@ jobs:
               print('=== Generating daily plan ===')
               subprocess.run(['snshack', '--profile', '${{ matrix.profile }}', 'autopilot'], check=True)
 
-          # ── Step 2: 投稿すべきか判断 ──
+          # ── Step 2: pending_posts を読み込み ──
           if not pending_path.exists():
               print('No pending file after plan generation')
               exit(0)
@@ -223,125 +234,66 @@ jobs:
           pending = [e for e in entries if e['status'] == 'pending']
 
           if not pending:
-              print('No pending posts')
+              print('No pending posts to schedule')
               exit(0)
 
-          # スケジュール時刻が現在時刻以前の未投稿を探す
-          # GitHub Actionsのcron遅延（最大15-20分）があっても確実に拾う
-          due = []
-          for e in entries:
-              if e['status'] != 'pending':
-                  continue
-              sh = e['scheduled_hour']
-              sm = e.get('scheduled_minute', 0)
-              if sh < current_hour or (sh == current_hour and sm <= current_minute):
-                  due.append(e)
-          # 時刻順にソートして古いものから順に全件投稿
-          due.sort(key=lambda x: (x['scheduled_hour'], x.get('scheduled_minute', 0)))
+          print(f'Found {len(pending)} pending posts to schedule via Metricool')
 
-          # workflow_dispatchの場合は次の1件を投稿
-          if not due and os.environ.get('GITHUB_EVENT_NAME') == 'workflow_dispatch':
-              due = [pending[0]]
-              print('Manual trigger: publishing next pending post')
+          # ── Step 3: Metricoolで全件予約投稿 ──
+          from snshack_threads.api import MetricoolClient
+          from snshack_threads.models import PostDraft
 
-          if not due:
-              print(f'No posts due at {current_hour:02d}:{current_minute:02d}')
-              print(f'Pending schedule: {[(e[\"scheduled_hour\"], e.get(\"scheduled_minute\", 0)) for e in pending]}')
-              exit(0)
-
-          # ── Step 3: due分を全件投稿 ──
-          from snshack_threads.threads_api import ThreadsGraphClient
-          import time as _time
-
-          def _char_ngrams(text, n=3):
-              text = text.strip()
-              if len(text) < n:
-                  return {text} if text else set()
-              return {text[i:i+n] for i in range(len(text) - n + 1)}
-
-          def is_duplicate(new_text, recent_posts, threshold=0.6):
-              new_ng = _char_ngrams(new_text)
-              if not new_ng:
-                  return False, None
-              for p in recent_posts:
-                  old_text = (p.get('text') or '').strip()
-                  if not old_text:
-                      continue
-                  old_ng = _char_ngrams(old_text)
-                  if not old_ng:
-                      continue
-                  jaccard = len(new_ng & old_ng) / len(new_ng | old_ng)
-                  if jaccard > threshold:
-                      return True, old_text
-              return False, None
-
-          # 最近の投稿を1回だけ取得（重複チェック用）
-          recent_posts = []
+          scheduled_hooks = []
           try:
-              with ThreadsGraphClient() as client:
-                  recent_posts = client.get_my_posts(limit=10)
+              with MetricoolClient(profile='${{ matrix.profile }}') as client:
+                  for entry in entries:
+                      if entry['status'] != 'pending':
+                          continue
+                      idx = entries.index(entry)
+                      h = entry['scheduled_hour']
+                      m = entry.get('scheduled_minute', 0)
+                      publish_at = now.replace(hour=h, minute=m, second=0, microsecond=0)
+
+                      # 既に過ぎた時刻の場合は30分後に投稿
+                      if publish_at <= now:
+                          from datetime import timedelta
+                          publish_at = now + timedelta(minutes=30 * (len(scheduled_hooks) + 1))
+                          print(f'  Time {h:02d}:{m:02d} already passed, rescheduling to {publish_at.strftime(\"%H:%M\")}')
+
+                      draft = PostDraft(text=entry['text'])
+                      print(f'Scheduling: {entry[\"hook\"]} -> {publish_at.strftime(\"%H:%M\")}')
+
+                      resp = client.schedule_post(draft, publish_at)
+                      entries[idx]['status'] = 'scheduled_metricool'
+                      entries[idx]['metricool_scheduled_at'] = publish_at.strftime('%Y-%m-%d %H:%M')
+                      scheduled_hooks.append(entry['hook'])
+                      print(f'  Scheduled OK: {entry[\"hook\"]} at {publish_at.strftime(\"%H:%M\")}')
+
+                  # 保存
+                  pending_path.write_text(
+                      json.dumps(entries, ensure_ascii=False, indent=2), encoding='utf-8'
+                  )
+
           except Exception as e:
-              print(f'Warning: failed to fetch recent posts for dup check ({e})')
+              # エラーでも途中経過は保存
+              pending_path.write_text(
+                  json.dumps(entries, ensure_ascii=False, indent=2), encoding='utf-8'
+              )
+              print(f'Metricool scheduling error: {e}')
+              if not scheduled_hooks:
+                  with open(os.environ.get('GITHUB_OUTPUT', '/dev/null'), 'a') as f:
+                      f.write(f'publish_status=failed\n')
+                      f.write(f'publish_error={e}\n')
+                  raise
 
-          published_hooks = []
-          last_error = None
-
-          for entry in due:
-              idx = entries.index(entry)
-              print(f'Publishing: {entry[\"hook\"]} ({entry[\"scheduled_hour\"]:02d}:{entry.get(\"scheduled_minute\", 0):02d})')
-              print(f'Text: {entry[\"text\"][:80]}...')
-
-              # 重複チェック
-              dup_found, dup_text = is_duplicate(entry['text'], recent_posts)
-              if dup_found:
-                  print(f'WARNING: Duplicate detected! Similar to: {dup_text[:80]}...')
-                  print('Skipping publish to avoid Threads suppression.')
-                  entries[idx]['status'] = 'skipped: duplicate'
-                  pending_path.write_text(
-                      json.dumps(entries, ensure_ascii=False, indent=2), encoding='utf-8'
-                  )
-                  continue
-
-              try:
-                  with ThreadsGraphClient() as client:
-                      post_id = client.create_text_post(entry['text'])
-                      entries[idx]['status'] = 'published'
-                      # 即座に保存（クラッシュ時の重複投稿を防止）
-                      pending_path.write_text(
-                          json.dumps(entries, ensure_ascii=False, indent=2), encoding='utf-8'
-                      )
-                      print(f'Published! Post ID: {post_id}')
-                      published_hooks.append(entry['hook'])
-                      # 次の投稿用に recent_posts にも追加
-                      recent_posts.append({'text': entry['text']})
-                      # 連続投稿のスパム判定を避けるため30秒待機
-                      if entry != due[-1]:
-                          print('Waiting 30s before next post...')
-                          _time.sleep(30)
-              except Exception as e:
-                  entries[idx]['status'] = f'failed: {e}'
-                  pending_path.write_text(
-                      json.dumps(entries, ensure_ascii=False, indent=2), encoding='utf-8'
-                  )
-                  print(f'Failed: {e}')
-                  last_error = e
-
-          sep = ','
           with open(os.environ.get('GITHUB_OUTPUT', '/dev/null'), 'a') as f:
-              if published_hooks:
+              if scheduled_hooks:
+                  sep = ','
+                  hooks_str = sep.join(scheduled_hooks)
                   f.write(f'publish_status=success\n')
-                  hooks_str = sep.join(published_hooks)
                   f.write(f'post_hook={hooks_str}\n')
-              elif last_error:
-                  f.write(f'publish_status=failed\n')
-                  f.write(f'publish_error={last_error}\n')
 
-          if last_error and not published_hooks:
-              raise RuntimeError(f'All posts failed. Last error: {last_error}')
-
-          remaining = sum(1 for e in entries if e['status'] == 'pending')
-          published_today = sum(1 for e in entries if e['status'] == 'published')
-          print(f'Published today: {published_today}/5, Remaining: {remaining}')
+          print(f'Scheduled {len(scheduled_hooks)}/{len(entries)} posts via Metricool')
           "
 
       - name: Success summary
@@ -353,9 +305,11 @@ jobs:
           echo "- **ステータス**: 成功" >> $GITHUB_STEP_SUMMARY
           echo "- **実行時刻**: $(date '+%Y-%m-%d %H:%M:%S %Z')" >> $GITHUB_STEP_SUMMARY
           if [ "${{ steps.publish.outputs.publish_status }}" = "success" ]; then
-            echo "- **投稿**: ${{ steps.publish.outputs.post_hook }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **予約投稿**: ${{ steps.publish.outputs.post_hook }}" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ steps.publish.outputs.publish_status }}" = "already_scheduled" ]; then
+            echo "- **予約投稿**: 本日分は予約済み" >> $GITHUB_STEP_SUMMARY
           else
-            echo "- **投稿**: スケジュール外のため投稿なし" >> $GITHUB_STEP_SUMMARY
+            echo "- **予約投稿**: 生成のみ（予約なし）" >> $GITHUB_STEP_SUMMARY
           fi
           if [ "${{ steps.token_check.outputs.token_expiring }}" = "true" ]; then
             echo "- **⚠️ トークン警告**: 残り ${{ steps.token_check.outputs.token_days_left }} 日" >> $GITHUB_STEP_SUMMARY
