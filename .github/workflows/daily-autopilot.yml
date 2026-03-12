@@ -326,10 +326,12 @@ jobs:
                   print(f'Failed: {e}')
                   last_error = e
 
+          sep = ','
           with open(os.environ.get('GITHUB_OUTPUT', '/dev/null'), 'a') as f:
               if published_hooks:
                   f.write(f'publish_status=success\n')
-                  f.write(f'post_hook={",".join(published_hooks)}\n')
+                  hooks_str = sep.join(published_hooks)
+                  f.write(f'post_hook={hooks_str}\n')
               elif last_error:
                   f.write(f'publish_status=failed\n')
                   f.write(f'publish_error={last_error}\n')
