@@ -201,6 +201,41 @@ def _build_system_prompt(settings=None, profile: str | None = None) -> str:
     except Exception:
         pass
 
+    # Hook performance ranking from actual post history
+    try:
+        from .post_history import PostHistory, get_performance_summary
+        from .config import get_settings as _gs3
+        _s3 = _gs3(profile=profile)
+        _h3 = PostHistory(history_path=_s3.profile_dir / "post_history.json")
+        perf = get_performance_summary(_h3)
+        top_hooks = perf.get("top_hooks", [])
+        if top_hooks:
+            parts.append("\n# データ分析: フック別パフォーマンスランキング")
+            parts.append("このアカウントの実績データに基づくフック効果。上位フックの手法を優先的に使え：")
+            for h in top_hooks[:7]:
+                conf_label = {"high": "信頼度高", "medium": "信頼度中", "low": "信頼度低"}.get(h.get("confidence", "low"), "")
+                parts.append(
+                    f"  - {h['hook']}: 平均{h['avg_views']:.0f}views, "
+                    f"平均{h['avg_likes']:.1f}いいね, "
+                    f"エンゲージメント{h['avg_engagement']:.2f}% "
+                    f"({h['count']}件, {conf_label})"
+                )
+            # Best times
+            best_times = perf.get("best_times", [])
+            if best_times:
+                parts.append("\n# データ分析: 効果の高い投稿時間帯")
+                for t in best_times[:3]:
+                    parts.append(f"  - {t['hour']}時台: 平均{t['avg_views']:.0f}views ({t['count']}件)")
+            # Length performance
+            length_perf = perf.get("length_performance", {})
+            if length_perf:
+                parts.append("\n# データ分析: 投稿文字数と効果")
+                for bucket, lp in length_perf.items():
+                    label = {"short": "短文(100字未満)", "medium": "中文(100-300字)", "long": "長文(300字以上)"}.get(bucket, bucket)
+                    parts.append(f"  - {label}: 平均{lp['avg_views']:.0f}views ({lp['count']}件)")
+    except Exception:
+        pass
+
     return "\n".join(parts)
 
 

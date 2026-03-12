@@ -405,8 +405,8 @@ def resolve_hooks(profile: str | None = None) -> ResolvedHooks:
 def _ensure_spread(slots: list[tuple[int, int]], min_gap_hours: int = 2) -> list[tuple[int, int]]:
     """Ensure slots are spread across the day with a minimum gap.
 
-    If slots are too bunched (e.g. all between 20-23), fall back to the
-    default well-spread schedule to guarantee reliable publishing.
+    If slots are too bunched, try to spread them while keeping the best
+    hours from the data. Only falls back to defaults as a last resort.
     """
     if len(slots) <= 1:
         return slots
@@ -414,14 +414,47 @@ def _ensure_spread(slots: list[tuple[int, int]], min_gap_hours: int = 2) -> list
     first_hour = sorted_slots[0][0]
     last_hour = sorted_slots[-1][0]
     span = last_hour - first_hour
-    # If all slots are within a 4-hour window, the schedule is too bunched
-    if span < min_gap_hours * (len(slots) - 1) and span <= 4:
-        logger.warning(
-            "Slots too bunched (%d:%02d-%d:%02d, span=%dh) — using default spread",
-            first_hour, sorted_slots[0][1], last_hour, sorted_slots[-1][1], span,
-        )
-        return [(8, 0), (11, 0), (14, 0), (18, 0), (21, 0)][:len(slots)]
-    return slots
+
+    # If slots are already well-spread, return as-is
+    if span >= min_gap_hours * (len(slots) - 1):
+        return slots
+
+    # Slots are bunched — try to spread them while keeping data-driven hours
+    # Strategy: keep the best hour (first in ranking), then add evenly spaced slots
+    logger.warning(
+        "Slots too bunched (%d:%02d-%d:%02d, span=%dh) — spreading with data-driven hours",
+        first_hour, sorted_slots[0][1], last_hour, sorted_slots[-1][1], span,
+    )
+
+    # Keep the center hour from the data as an anchor
+    center_hour = sorted_slots[len(sorted_slots) // 2][0]
+    n = len(slots)
+
+    # Try to build a spread schedule centered around the data's peak hours
+    # Use data hours as seeds, fill gaps with well-known good hours
+    candidate_hours = [8, 11, 14, 18, 21]  # Known good hours as filler
+    data_hours = [s[0] for s in sorted_slots]
+
+    # Prioritize data hours, then fill with candidates
+    all_candidates = data_hours + [h for h in candidate_hours if h not in data_hours]
+
+    # Greedy selection with min_gap constraint
+    selected: list[int] = [all_candidates[0]]
+    for h in all_candidates[1:]:
+        if len(selected) >= n:
+            break
+        if all(abs(h - s) >= min_gap_hours for s in selected):
+            selected.append(h)
+
+    # If we couldn't fill enough, add from candidate_hours
+    for h in range(7, 23):
+        if len(selected) >= n:
+            break
+        if all(abs(h - s) >= min_gap_hours for s in selected):
+            selected.append(h)
+
+    selected.sort()
+    return [(h, 0) for h in selected[:n]]
 
 
 def resolve_times(

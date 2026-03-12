@@ -536,28 +536,41 @@ def get_performance_summary(history: PostHistory) -> dict:
         return {"total_posts": history.count, "collected": 0}
 
     # Hook performance with recency weighting
+    # Use only the primary (first detected) hook per post to avoid double counting
     hook_stats: dict[str, dict] = {}
     for record in collected:
         hooks = _detect_hooks(record.text)
+        if not hooks:
+            continue
+        primary_hook = hooks[0]  # Use only the primary hook
         w = _recency_weight(record.scheduled_at)
-        for hook in hooks:
-            if hook not in hook_stats:
-                hook_stats[hook] = {
-                    "views": [], "likes": [], "count": 0,
-                    "weighted_views": [], "weights": [],
-                    "engagement": [],
-                }
-            hook_stats[hook]["views"].append(record.views)
-            hook_stats[hook]["likes"].append(record.likes)
-            hook_stats[hook]["count"] += 1
-            hook_stats[hook]["weighted_views"].append(record.views * w)
-            hook_stats[hook]["weights"].append(w)
-            hook_stats[hook]["engagement"].append(record.engagement)
+        if primary_hook not in hook_stats:
+            hook_stats[primary_hook] = {
+                "views": [], "likes": [], "count": 0,
+                "weighted_views": [], "weights": [],
+                "engagement": [],
+            }
+        hook_stats[primary_hook]["views"].append(record.views)
+        hook_stats[primary_hook]["likes"].append(record.likes)
+        hook_stats[primary_hook]["count"] += 1
+        hook_stats[primary_hook]["weighted_views"].append(record.views * w)
+        hook_stats[primary_hook]["weights"].append(w)
+        hook_stats[primary_hook]["engagement"].append(record.engagement)
 
     # Global mean for Bayesian shrinkage
     all_views = [r.views for r in collected]
     global_mean = sum(all_views) / len(all_views) if all_views else 0
-    PRIOR_WEIGHT = 5  # equivalent to 5 virtual samples at global mean
+    # Adaptive prior weight: lighter shrinkage when we have less data overall
+    # This prevents over-smoothing in the early stages
+    total_collected = len(collected)
+    if total_collected < 20:
+        PRIOR_WEIGHT = 2  # Light shrinkage for early data
+    elif total_collected < 50:
+        PRIOR_WEIGHT = 3
+    elif total_collected < 100:
+        PRIOR_WEIGHT = 4
+    else:
+        PRIOR_WEIGHT = 5  # Full shrinkage for mature data
 
     hook_ranking = []
     for hook, stats in hook_stats.items():

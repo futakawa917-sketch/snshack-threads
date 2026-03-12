@@ -286,24 +286,46 @@ def generate_daily_plan(
     short_ratio = settings.short_post_ratio if hasattr(settings, "short_post_ratio") else 0.5
     post_lengths = _determine_post_lengths(posts_per_day, short_ratio=short_ratio)
 
+    # Build performance context string for AI generation
+    perf_context = ""
+    try:
+        from .post_history import get_performance_summary
+        perf_summary = get_performance_summary(history)
+        top_hooks_perf = perf_summary.get("top_hooks", [])
+        if top_hooks_perf:
+            perf_lines = []
+            for h in top_hooks_perf[:5]:
+                perf_lines.append(
+                    f"{h['hook']}: 平均{h['avg_views']:.0f}views, "
+                    f"エンゲージメント{h['avg_engagement']:.2f}%"
+                )
+            perf_context = (
+                "【このアカウントの実績データ】上位フックの手法を参考にしつつ、"
+                "指定フックで新しい切り口を出せ。\n" + "\n".join(perf_lines)
+            )
+    except Exception:
+        pass
+
     try:
         if phase == "bootstrap":
             if resolved.hooks and resolved.tier != DataTier.ACCOUNT:
                 plan = _plan_bootstrap_guided(
                     plan, topics, unique_hooks, resolved.hooks, posts_per_day,
                     boost_hooks=boost_hooks, post_types=post_types, post_lengths=post_lengths,
+                    perf_context=perf_context,
                 )
             else:
-                plan = _plan_bootstrap(plan, topics, unique_hooks, posts_per_day, post_types=post_types, post_lengths=post_lengths)
+                plan = _plan_bootstrap(plan, topics, unique_hooks, posts_per_day, post_types=post_types, post_lengths=post_lengths, perf_context=perf_context)
         elif phase == "learning":
             plan = _plan_learning(
                 plan, topics, unique_hooks, history, posts_per_day,
                 fallback_hooks=resolved.hooks if resolved.tier != DataTier.ACCOUNT else None,
                 boost_hooks=boost_hooks, post_types=post_types, post_lengths=post_lengths,
                 ab_winning_hooks=ab_winning_hooks,
+                perf_context=perf_context,
             )
         else:
-            plan = _plan_optimized(plan, topics, unique_hooks, history, posts_per_day, post_types=post_types, post_lengths=post_lengths)
+            plan = _plan_optimized(plan, topics, unique_hooks, history, posts_per_day, post_types=post_types, post_lengths=post_lengths, perf_context=perf_context)
     except Exception as e:
         logger.error("Plan generation failed: %s", e)
         plan.skipped.append(f"Generation error: {e}")
@@ -423,6 +445,7 @@ def _plan_bootstrap(
     count: int,
     post_types: list[str] | None = None,
     post_lengths: list[str] | None = None,
+    perf_context: str = "",
 ) -> DailyPlan:
     """Bootstrap phase: rotate hooks evenly for data collection."""
     from .content_generator import generate_post
@@ -433,7 +456,7 @@ def _plan_bootstrap(
         ptype = post_types[i] if post_types and i < len(post_types) else "reach"
         plength = post_lengths[i] if post_lengths and i < len(post_lengths) else "medium"
         try:
-            post = generate_post(topic=topic, hook_type=hook, length=plength)
+            post = generate_post(topic=topic, hook_type=hook, tone=perf_context, length=plength)
             plan.posts.append({
                 "text": post.text, "hook": hook,
                 "source": "bootstrap_generate", "post_type": ptype,
@@ -453,6 +476,7 @@ def _plan_bootstrap_guided(
     boost_hooks: list[str] | None = None,
     post_types: list[str] | None = None,
     post_lengths: list[str] | None = None,
+    perf_context: str = "",
 ) -> DailyPlan:
     """Bootstrap with genre/universal intelligence guiding hook selection.
 
@@ -481,7 +505,7 @@ def _plan_bootstrap_guided(
         ptype = post_types[i] if post_types and i < len(post_types) else "reach"
         plength = post_lengths[i] if post_lengths and i < len(post_lengths) else "medium"
         try:
-            post = generate_post(topic=topic, hook_type=hook, length=plength)
+            post = generate_post(topic=topic, hook_type=hook, tone=perf_context, length=plength)
             plan.posts.append({
                 "text": post.text, "hook": hook,
                 "source": "bootstrap_guided", "post_type": ptype,
@@ -496,7 +520,7 @@ def _plan_bootstrap_guided(
         ptype = post_types[idx] if post_types and idx < len(post_types) else "reach"
         plength = post_lengths[idx] if post_lengths and idx < len(post_lengths) else "medium"
         try:
-            post = generate_post(topic=topic, hook_type=hook, length=plength)
+            post = generate_post(topic=topic, hook_type=hook, tone=perf_context, length=plength)
             plan.posts.append({
                 "text": post.text, "hook": hook,
                 "source": "bootstrap_explore", "post_type": ptype,
@@ -518,6 +542,7 @@ def _plan_learning(
     post_types: list[str] | None = None,
     post_lengths: list[str] | None = None,
     ab_winning_hooks: list[str] | None = None,
+    perf_context: str = "",
 ) -> DailyPlan:
     """Learning phase: focus on top hooks, explore others, A/B test one pair."""
     from .content_generator import generate_post
@@ -562,7 +587,8 @@ def _plan_learning(
         hook = top_hook_names[i % len(top_hook_names)] if top_hook_names else hooks[i % len(hooks)]
         ptype = post_types[i] if post_types and i < len(post_types) else "reach"
         plength = post_lengths[i] if post_lengths and i < len(post_lengths) else "medium"
-        tone = "フォロワー獲得重視。保存したくなるリスト形式・チェックリスト・ランキング・実用ノウハウを使い、「このアカウントをフォローすると得する」と思わせる構成にする" if ptype == "list" else ""
+        list_tone = "フォロワー獲得重視。保存したくなるリスト形式・チェックリスト・ランキング・実用ノウハウを使い、「このアカウントをフォローすると得する」と思わせる構成にする" if ptype == "list" else ""
+        tone = f"{list_tone}\n{perf_context}".strip() if perf_context or list_tone else ""
         try:
             post = generate_post(topic=topic, hook_type=hook, tone=tone, length=plength)
             plan.posts.append({
@@ -578,7 +604,8 @@ def _plan_learning(
         hook = explore_hooks[i % len(explore_hooks)] if explore_hooks else hooks[idx % len(hooks)]
         ptype = post_types[idx] if post_types and idx < len(post_types) else "reach"
         plength = post_lengths[idx] if post_lengths and idx < len(post_lengths) else "medium"
-        tone = "フォロワー獲得重視。保存したくなるリスト形式・チェックリスト・ランキング・実用ノウハウを使い、「このアカウントをフォローすると得する」と思わせる構成にする" if ptype == "list" else ""
+        list_tone = "フォロワー獲得重視。保存したくなるリスト形式・チェックリスト・ランキング・実用ノウハウを使い、「このアカウントをフォローすると得する」と思わせる構成にする" if ptype == "list" else ""
+        tone = f"{list_tone}\n{perf_context}".strip() if perf_context or list_tone else ""
         try:
             post = generate_post(topic=topic, hook_type=hook, tone=tone, length=plength)
             plan.posts.append({
@@ -625,6 +652,7 @@ def _plan_optimized(
     count: int,
     post_types: list[str] | None = None,
     post_lengths: list[str] | None = None,
+    perf_context: str = "",
 ) -> DailyPlan:
     """Optimized phase: template-based + recycle for proven winners."""
     from .content_generator import generate_from_template, generate_recycle
@@ -693,7 +721,8 @@ def _plan_optimized(
         pt = post_types[posts_added] if posts_added < len(post_types) else "reach"
         plength = post_lengths[posts_added] if post_lengths and posts_added < len(post_lengths) else "medium"
         try:
-            tone = "フォロワー獲得重視。保存したくなるリスト形式・チェックリスト・ランキング・実用ノウハウを使い、「このアカウントをフォローすると得する」と思わせる構成にする" if pt == "list" else ""
+            list_tone = "フォロワー獲得重視。保存したくなるリスト形式・チェックリスト・ランキング・実用ノウハウを使い、「このアカウントをフォローすると得する」と思わせる構成にする" if pt == "list" else ""
+            tone = f"{list_tone}\n{perf_context}".strip() if perf_context or list_tone else ""
             post = generate_post(topic=topic, hook_type=hook, tone=tone, length=plength)
             plan.posts.append({
                 "text": post.text,
