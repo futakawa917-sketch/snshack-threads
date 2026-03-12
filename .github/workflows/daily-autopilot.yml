@@ -242,6 +242,9 @@ jobs:
           # ── Step 3: Metricoolで全件予約投稿 ──
           from snshack_threads.api import MetricoolClient
           from snshack_threads.models import PostDraft
+          from snshack_threads.post_history import PostHistory
+
+          history = PostHistory(history_path=settings.profile_dir / 'post_history.json')
 
           scheduled_hooks = []
           try:
@@ -267,6 +270,16 @@ jobs:
                       entries[idx]['status'] = 'scheduled_metricool'
                       entries[idx]['metricool_scheduled_at'] = publish_at.strftime('%Y-%m-%d %H:%M')
                       scheduled_hooks.append(entry['hook'])
+
+                      # post_history.jsonに記録（学習データ蓄積の要）
+                      post_type = entry.get('post_type', 'reach')
+                      history.record_scheduled(
+                          text=entry['text'],
+                          publish_at=publish_at,
+                          metricool_response={'scheduled_via': 'metricool'},
+                          post_type=post_type,
+                      )
+
                       print(f'  Scheduled OK: {entry[\"hook\"]} at {publish_at.strftime(\"%H:%M\")}')
 
                   # 保存
