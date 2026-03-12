@@ -23,8 +23,9 @@ htmlcov/
 # Logs
 logs/
 
-# CSV data
+# CSV data (except reference data for CI)
 *.csv
+!data/*/reference.csv
 
 # Data directory (persisted by GitHub Actions)
 # config.json contains secrets — never commit
