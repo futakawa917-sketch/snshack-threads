@@ -215,7 +215,6 @@ jobs:
               subprocess.run(['snshack', '--profile', '${{ matrix.profile }}', 'autopilot'], check=True)
 
           # ── Step 2: 投稿すべきか判断 ──
-          # 再分散は不要: 過去の投稿漏れはdue判定で毎時1件ずつ自然に処理される
           if not pending_path.exists():
               print('No pending file after plan generation')
               exit(0)
@@ -237,7 +236,7 @@ jobs:
               sm = e.get('scheduled_minute', 0)
               if sh < current_hour or (sh == current_hour and sm <= current_minute):
                   due.append(e)
-          # 時刻順にソートして最も古いものから投稿（1回の実行で1件のみ）
+          # 時刻順にソートして古いものから順に全件投稿
           due.sort(key=lambda x: (x['scheduled_hour'], x.get('scheduled_minute', 0)))
 
           # workflow_dispatchの場合は次の1件を投稿
@@ -250,16 +249,10 @@ jobs:
               print(f'Pending schedule: {[(e[\"scheduled_hour\"], e.get(\"scheduled_minute\", 0)) for e in pending]}')
               exit(0)
 
-          # ── Step 3: 投稿 (due分だけ、最大1件) ──
-          entry = due[0]
-          idx = entries.index(entry)
-
-          print(f'Publishing: {entry[\"hook\"]} ({entry[\"scheduled_hour\"]:02d}:{entry.get(\"scheduled_minute\", 0):02d})')
-          print(f'Text: {entry[\"text\"][:80]}...')
-
+          # ── Step 3: due分を全件投稿 ──
           from snshack_threads.threads_api import ThreadsGraphClient
+          import time as _time
 
-          # ── Duplicate check ──
           def _char_ngrams(text, n=3):
               text = text.strip()
               if len(text) < n:
@@ -282,20 +275,33 @@ jobs:
                       return True, old_text
               return False, None
 
-          skip_publish = False
+          # 最近の投稿を1回だけ取得（重複チェック用）
+          recent_posts = []
           try:
               with ThreadsGraphClient() as client:
-                  recent = client.get_my_posts(limit=10)
-                  dup_found, dup_text = is_duplicate(entry['text'], recent)
-                  if dup_found:
-                      print(f'WARNING: Duplicate detected! Similar to: {dup_text[:80]}...')
-                      print('Skipping publish to avoid Threads suppression.')
-                      entries[idx]['status'] = 'skipped: duplicate'
-                      skip_publish = True
+                  recent_posts = client.get_my_posts(limit=10)
           except Exception as e:
-              print(f'Warning: duplicate check failed ({e}), proceeding with publish')
+              print(f'Warning: failed to fetch recent posts for dup check ({e})')
 
-          if not skip_publish:
+          published_hooks = []
+          last_error = None
+
+          for entry in due:
+              idx = entries.index(entry)
+              print(f'Publishing: {entry[\"hook\"]} ({entry[\"scheduled_hour\"]:02d}:{entry.get(\"scheduled_minute\", 0):02d})')
+              print(f'Text: {entry[\"text\"][:80]}...')
+
+              # 重複チェック
+              dup_found, dup_text = is_duplicate(entry['text'], recent_posts)
+              if dup_found:
+                  print(f'WARNING: Duplicate detected! Similar to: {dup_text[:80]}...')
+                  print('Skipping publish to avoid Threads suppression.')
+                  entries[idx]['status'] = 'skipped: duplicate'
+                  pending_path.write_text(
+                      json.dumps(entries, ensure_ascii=False, indent=2), encoding='utf-8'
+                  )
+                  continue
+
               try:
                   with ThreadsGraphClient() as client:
                       post_id = client.create_text_post(entry['text'])
@@ -305,23 +311,31 @@ jobs:
                           json.dumps(entries, ensure_ascii=False, indent=2), encoding='utf-8'
                       )
                       print(f'Published! Post ID: {post_id}')
-                      with open(os.environ.get('GITHUB_OUTPUT', '/dev/null'), 'a') as f:
-                          f.write(f'publish_status=success\n')
-                          f.write(f'post_hook={entry[\"hook\"]}\n')
+                      published_hooks.append(entry['hook'])
+                      # 次の投稿用に recent_posts にも追加
+                      recent_posts.append({'text': entry['text']})
+                      # 連続投稿のスパム判定を避けるため30秒待機
+                      if entry != due[-1]:
+                          print('Waiting 30s before next post...')
+                          _time.sleep(30)
               except Exception as e:
                   entries[idx]['status'] = f'failed: {e}'
                   pending_path.write_text(
                       json.dumps(entries, ensure_ascii=False, indent=2), encoding='utf-8'
                   )
                   print(f'Failed: {e}')
-                  with open(os.environ.get('GITHUB_OUTPUT', '/dev/null'), 'a') as f:
-                      f.write(f'publish_status=failed\n')
-                      f.write(f'publish_error={e}\n')
-                  raise
-          else:
-              pending_path.write_text(
-                  json.dumps(entries, ensure_ascii=False, indent=2), encoding='utf-8'
-              )
+                  last_error = e
+
+          with open(os.environ.get('GITHUB_OUTPUT', '/dev/null'), 'a') as f:
+              if published_hooks:
+                  f.write(f'publish_status=success\n')
+                  f.write(f'post_hook={",".join(published_hooks)}\n')
+              elif last_error:
+                  f.write(f'publish_status=failed\n')
+                  f.write(f'publish_error={last_error}\n')
+
+          if last_error and not published_hooks:
+              raise RuntimeError(f'All posts failed. Last error: {last_error}')
 
           remaining = sum(1 for e in entries if e['status'] == 'pending')
           published_today = sum(1 for e in entries if e['status'] == 'published')

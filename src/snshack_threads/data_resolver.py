@@ -402,6 +402,28 @@ def resolve_hooks(profile: str | None = None) -> ResolvedHooks:
     return ResolvedHooks(tier=DataTier.UNIVERSAL, hooks=[])
 
 
+def _ensure_spread(slots: list[tuple[int, int]], min_gap_hours: int = 2) -> list[tuple[int, int]]:
+    """Ensure slots are spread across the day with a minimum gap.
+
+    If slots are too bunched (e.g. all between 20-23), fall back to the
+    default well-spread schedule to guarantee reliable publishing.
+    """
+    if len(slots) <= 1:
+        return slots
+    sorted_slots = sorted(slots, key=lambda s: (s[0], s[1]))
+    first_hour = sorted_slots[0][0]
+    last_hour = sorted_slots[-1][0]
+    span = last_hour - first_hour
+    # If all slots are within a 4-hour window, the schedule is too bunched
+    if span < min_gap_hours * (len(slots) - 1) and span <= 4:
+        logger.warning(
+            "Slots too bunched (%d:%02d-%d:%02d, span=%dh) — using default spread",
+            first_hour, sorted_slots[0][1], last_hour, sorted_slots[-1][1], span,
+        )
+        return [(8, 0), (11, 0), (14, 0), (18, 0), (21, 0)][:len(slots)]
+    return slots
+
+
 def resolve_times(
     profile: str | None = None,
     day_of_week: int | None = None,
@@ -410,18 +432,21 @@ def resolve_times(
     # Tier 1: Account
     slots = _account_times(profile, day_of_week)
     if slots:
+        slots = _ensure_spread(slots)
         logger.info("Times resolved from account data")
         return ResolvedTimes(tier=DataTier.ACCOUNT, slots=slots)
 
     # Tier 2: Genre
     slots = _genre_times(profile, day_of_week)
     if slots:
+        slots = _ensure_spread(slots)
         logger.info("Times resolved from genre data")
         return ResolvedTimes(tier=DataTier.GENRE, slots=slots)
 
     # Tier 3: Universal
     slots = _universal_times(day_of_week)
     if slots:
+        slots = _ensure_spread(slots)
         logger.info("Times resolved from universal data")
         return ResolvedTimes(tier=DataTier.UNIVERSAL, slots=slots)
 
