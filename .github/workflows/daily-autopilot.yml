@@ -3,7 +3,7 @@ name: Daily Autopilot
 on:
   schedule:
     # 毎日 JST 7:00 に1回だけ実行 (UTC 22:00)
-    # AIで投稿生成 → Metricoolで5件を予約投稿
+    # AIで投稿生成 → Threads APIで直接投稿
     - cron: '0 22 * * *'
   workflow_dispatch: # 手動実行も可能
 
@@ -169,7 +169,7 @@ jobs:
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
-      - name: Generate and schedule via Metricool
+      - name: Generate and publish via Threads API
         id: publish
         run: |
           python -c "
@@ -196,10 +196,9 @@ jobs:
                   need_generate = True
                   print('Pending file is empty')
               else:
-                  # 今日分が既にscheduled済みならスキップ
-                  already_scheduled = any(e.get('status') == 'scheduled_metricool' for e in entries)
-                  if already_scheduled:
-                      print('Today posts already scheduled via Metricool. Nothing to do.')
+                  already_published = any(e.get('status') == 'published' for e in entries)
+                  if already_published:
+                      print('Today posts already published. Nothing to do.')
                       with open(os.environ.get('GITHUB_OUTPUT', '/dev/null'), 'a') as f:
                           f.write('publish_status=already_scheduled\n')
                       exit(0)
@@ -223,7 +222,7 @@ jobs:
               except Exception as ae:
                   print(f'Archive check skipped: {ae}')
               print('=== Generating daily plan ===')
-              subprocess.run(['snshack', '--profile', '${{ matrix.profile }}', 'autopilot'], check=True)
+              subprocess.run(['snshack', '--profile', '${{ matrix.profile }}', 'autopilot', '--method', 'threads'], check=True)
 
           # ── Step 2: pending_posts を読み込み ──
           if not pending_path.exists():
@@ -237,18 +236,17 @@ jobs:
               print('No pending posts to schedule')
               exit(0)
 
-          print(f'Found {len(pending)} pending posts to schedule via Metricool')
+          print(f'Found {len(pending)} pending posts to publish via Threads API')
 
-          # ── Step 3: Metricoolで全件予約投稿 ──
-          from snshack_threads.api import MetricoolClient
-          from snshack_threads.models import PostDraft
+          # ── Step 3: Threads APIで直接投稿 ──
+          from snshack_threads.threads_api import ThreadsGraphClient
           from snshack_threads.post_history import PostHistory
 
           history = PostHistory(history_path=settings.profile_dir / 'post_history.json')
 
-          scheduled_hooks = []
+          published_hooks = []
           try:
-              with MetricoolClient(profile='${{ matrix.profile }}') as client:
+              with ThreadsGraphClient() as client:
                   for entry in entries:
                       if entry['status'] != 'pending':
                           continue
@@ -257,30 +255,30 @@ jobs:
                       m = entry.get('scheduled_minute', 0)
                       publish_at = now.replace(hour=h, minute=m, second=0, microsecond=0)
 
-                      # 既に過ぎた時刻の場合は30分後に投稿
-                      if publish_at <= now:
-                          from datetime import timedelta
-                          publish_at = now + timedelta(minutes=30 * (len(scheduled_hooks) + 1))
-                          print(f'  Time {h:02d}:{m:02d} already passed, rescheduling to {publish_at.strftime(\"%H:%M\")}')
+                      # まだ時間が来ていない投稿はスキップ
+                      if publish_at > now:
+                          print(f'  Skipping {entry[\"hook\"]} (scheduled at {h:02d}:{m:02d}, not yet due)')
+                          continue
 
-                      draft = PostDraft(text=entry['text'])
-                      print(f'Scheduling: {entry[\"hook\"]} -> {publish_at.strftime(\"%H:%M\")}')
+                      print(f'Publishing: {entry[\"hook\"]} (scheduled {h:02d}:{m:02d})')
 
-                      resp = client.schedule_post(draft, publish_at)
-                      entries[idx]['status'] = 'scheduled_metricool'
-                      entries[idx]['metricool_scheduled_at'] = publish_at.strftime('%Y-%m-%d %H:%M')
-                      scheduled_hooks.append(entry['hook'])
+                      try:
+                          post_id = client.create_text_post(entry['text'])
+                          entries[idx]['status'] = 'published'
+                          entries[idx]['threads_post_id'] = post_id
+                          published_hooks.append(entry['hook'])
 
-                      # post_history.jsonに記録（学習データ蓄積の要）
-                      post_type = entry.get('post_type', 'reach')
-                      history.record_scheduled(
-                          text=entry['text'],
-                          publish_at=publish_at,
-                          metricool_response={'scheduled_via': 'metricool'},
-                          post_type=post_type,
-                      )
+                          post_type = entry.get('post_type', 'reach')
+                          history.record_scheduled(
+                              text=entry['text'],
+                              publish_at=publish_at,
+                              post_type=post_type,
+                          )
 
-                      print(f'  Scheduled OK: {entry[\"hook\"]} at {publish_at.strftime(\"%H:%M\")}')
+                          print(f'  Published OK: {entry[\"hook\"]} (post_id={post_id})')
+                      except Exception as pe:
+                          entries[idx]['status'] = f'failed: {pe}'
+                          print(f'  Failed: {entry[\"hook\"]} — {pe}')
 
                   # 保存
                   pending_path.write_text(
@@ -288,25 +286,24 @@ jobs:
                   )
 
           except Exception as e:
-              # エラーでも途中経過は保存
               pending_path.write_text(
                   json.dumps(entries, ensure_ascii=False, indent=2), encoding='utf-8'
               )
-              print(f'Metricool scheduling error: {e}')
-              if not scheduled_hooks:
+              print(f'Threads API error: {e}')
+              if not published_hooks:
                   with open(os.environ.get('GITHUB_OUTPUT', '/dev/null'), 'a') as f:
                       f.write(f'publish_status=failed\n')
                       f.write(f'publish_error={e}\n')
                   raise
 
           with open(os.environ.get('GITHUB_OUTPUT', '/dev/null'), 'a') as f:
-              if scheduled_hooks:
+              if published_hooks:
                   sep = ','
-                  hooks_str = sep.join(scheduled_hooks)
+                  hooks_str = sep.join(published_hooks)
                   f.write(f'publish_status=success\n')
                   f.write(f'post_hook={hooks_str}\n')
 
-          print(f'Scheduled {len(scheduled_hooks)}/{len(entries)} posts via Metricool')
+          print(f'Published {len(published_hooks)}/{len(entries)} posts via Threads API')
           "
 
       - name: Success summary
