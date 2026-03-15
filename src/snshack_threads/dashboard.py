@@ -90,8 +90,9 @@ def main() -> None:
     )
 
     # ── Tabs ───────────────────────────────────────────────
-    tab_overview, tab_time, tab_hooks, tab_content, tab_posts, tab_status = st.tabs([
-        "📈 概要", "⏰ 時間帯分析", "🎣 フック分析", "📝 コンテンツ分析", "📋 投稿一覧", "⚙️ 学習状態",
+    tab_overview, tab_time, tab_hooks, tab_content, tab_posts, tab_ab, tab_tools, tab_research, tab_token, tab_status = st.tabs([
+        "📈 概要", "⏰ 時間帯分析", "🎣 フック分析", "📝 コンテンツ分析", "📋 投稿一覧",
+        "🧪 A/Bテスト", "🔧 ツール", "🔍 リサーチ", "🔑 トークン管理", "⚙️ 学習状態",
     ])
 
     with tab_overview:
@@ -109,8 +110,407 @@ def main() -> None:
     with tab_posts:
         _render_post_list(st, df)
 
+    with tab_ab:
+        _render_ab_test(st, settings, selected_profile)
+
+    with tab_tools:
+        _render_tools(st, settings, selected_profile, df)
+
+    with tab_research:
+        _render_research(st, settings, selected_profile)
+
+    with tab_token:
+        _render_token_management(st, settings, selected_profile)
+
     with tab_status:
         _render_learning_status(st, settings, selected_profile)
+
+
+def _render_ab_test(st, settings, profile: str):
+    """Render A/B test management tab."""
+    st.header("🧪 A/Bテスト")
+
+    try:
+        from .ab_test import ABTestManager
+        manager = ABTestManager(store_path=settings.profile_dir / "ab_tests.json")
+        tests = manager.get_all()
+
+        if not tests:
+            st.info("A/Bテストはまだありません。autopilotのlearningフェーズで自動作成されます。")
+            return
+
+        # Summary metrics
+        completed = [t for t in tests if t.status == "completed"]
+        active = [t for t in tests if t.status == "active"]
+        col1, col2, col3 = st.columns(3)
+        col1.metric("合計テスト数", len(tests))
+        col2.metric("実行中", len(active))
+        col3.metric("完了", len(completed))
+
+        # Active tests
+        if active:
+            st.subheader("実行中のテスト")
+            for test in active:
+                with st.expander(f"📊 {test.theme}"):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown("**パターンA**")
+                        st.text(test.variant_a_text[:200])
+                        if hasattr(test, 'variant_a_views'):
+                            st.metric("閲覧数", test.variant_a_views)
+                    with col2:
+                        st.markdown("**パターンB**")
+                        st.text(test.variant_b_text[:200])
+                        if hasattr(test, 'variant_b_views'):
+                            st.metric("閲覧数", test.variant_b_views)
+
+        # Completed tests
+        if completed:
+            st.subheader("完了したテスト")
+            for test in completed:
+                winner_label = f"パターン{test.winner}" if test.winner in ("A", "B") else "引き分け"
+                confidence_label = {"high": "高", "medium": "中", "low": "低"}.get(test.confidence, "—")
+                with st.expander(f"{'✅' if test.winner in ('A', 'B') else '➖'} {test.theme} → {winner_label}（確信度: {confidence_label}）"):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown(f"**パターンA** {'🏆' if test.winner == 'A' else ''}")
+                        st.text(test.variant_a_text[:200])
+                    with col2:
+                        st.markdown(f"**パターンB** {'🏆' if test.winner == 'B' else ''}")
+                        st.text(test.variant_b_text[:200])
+    except Exception as e:
+        st.warning(f"A/Bテストデータ取得失敗: {e}")
+
+
+def _render_tools(st, settings, profile: str, df):
+    """Render tools tab with recycling, scheduling, audit, hooks, and AI generation."""
+    st.header("🔧 ツール")
+
+    tool_tab1, tool_tab2, tool_tab3, tool_tab4, tool_tab5 = st.tabs([
+        "♻️ リサイクル", "📅 予約投稿", "🎯 プロファイル監査", "🪝 フック管理", "🤖 AI生成",
+    ])
+
+    # -- Recycle --
+    with tool_tab1:
+        st.subheader("♻️ コンテンツリサイクル")
+        st.caption("30日以上前の高パフォーマンス投稿を新しいフックで再利用")
+        try:
+            from .content_recycler import find_recyclable_posts
+            from .post_history import PostHistory
+
+            history = PostHistory(history_path=settings.profile_dir / "post_history.json")
+            min_views = st.number_input("最低閲覧数", min_value=100, value=500, step=100, key="recycle_min")
+            min_age = st.number_input("最低経過日数", min_value=7, value=30, step=7, key="recycle_age")
+
+            recyclable = find_recyclable_posts(history, min_views=min_views, min_age_days=min_age)
+
+            if recyclable:
+                st.success(f"♻️ {len(recyclable)}件のリサイクル候補")
+                for i, post in enumerate(recyclable[:10]):
+                    with st.expander(f"{post.views:,} views — {post.text[:60]}..."):
+                        st.text(post.text)
+                        st.caption(f"閲覧数: {post.views:,} | 投稿日: {post.scheduled_at}")
+                        if st.button(f"リサイクル生成", key=f"recycle_{i}"):
+                            try:
+                                from .content_generator import generate_recycle
+                                recycled = generate_recycle(original_text=post.text, original_views=post.views)
+                                st.markdown("**生成結果:**")
+                                st.text(recycled.text)
+                            except Exception as e:
+                                st.error(f"生成失敗: {e}")
+            else:
+                st.info("リサイクル候補なし（投稿数が少ないか、基準を下げてください）")
+        except Exception as e:
+            st.warning(f"リサイクル機能エラー: {e}")
+
+    # -- Manual Scheduling --
+    with tool_tab2:
+        st.subheader("📅 予約投稿")
+        if not settings.validate_credentials():
+            st.warning("Metricool認証情報を設定してください")
+        else:
+            with st.form("manual_schedule"):
+                post_text = st.text_area("投稿テキスト", height=150, placeholder="投稿内容を入力...")
+                col1, col2 = st.columns(2)
+                schedule_date = col1.date_input("投稿日")
+                schedule_time = col2.time_input("投稿時刻")
+                submitted = st.form_submit_button("Metricoolで予約", type="primary")
+
+            if submitted and post_text:
+                try:
+                    from .api import MetricoolClient
+                    from .models import PostDraft
+
+                    publish_at = datetime.combine(schedule_date, schedule_time)
+                    draft = PostDraft(text=post_text)
+                    with MetricoolClient(settings=settings) as client:
+                        resp = client.schedule_post(draft, publish_at)
+                        st.success(f"✅ {publish_at.strftime('%Y-%m-%d %H:%M')} に予約しました")
+                except Exception as e:
+                    st.error(f"予約失敗: {e}")
+
+            # Show queue
+            st.markdown("---")
+            st.subheader("予約キュー")
+            if st.button("予約一覧を取得", key="load_queue"):
+                try:
+                    from .api import MetricoolClient
+                    today = datetime.now().strftime("%Y-%m-%d")
+                    week_later = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+                    with MetricoolClient(settings=settings) as client:
+                        scheduled = client.get_scheduled_posts(today, week_later)
+                        if scheduled:
+                            st.write(f"**{len(scheduled)}件** の予約投稿")
+                            for p in scheduled:
+                                pub_date = p.get("publicationDate", {}).get("dateTime", "")
+                                text = ""
+                                for net in p.get("networks", []):
+                                    text = net.get("text", "")[:80]
+                                    break
+                                st.write(f"📌 {pub_date} — {text}")
+                        else:
+                            st.info("予約投稿なし")
+                except Exception as e:
+                    st.error(f"取得失敗: {e}")
+
+    # -- Profile Audit --
+    with tool_tab3:
+        st.subheader("🎯 プロファイル監査")
+        if st.button("監査を実行", key="run_audit"):
+            try:
+                from .profile_audit import audit_profile
+                result = audit_profile(profile=profile)
+
+                score = result.get("score", 0)
+                st.metric("総合スコア", f"{score}/100")
+                st.progress(score / 100)
+
+                for item in result.get("items", []):
+                    status_icon = "✅" if item.get("passed") else "❌"
+                    st.write(f"{status_icon} **{item.get('name', '')}** — {item.get('detail', '')}")
+
+                suggestions = result.get("suggestions", [])
+                if suggestions:
+                    st.subheader("改善提案")
+                    for s in suggestions:
+                        st.write(f"💡 {s}")
+            except Exception as e:
+                st.warning(f"監査失敗: {e}")
+
+    # -- Hook Management --
+    with tool_tab4:
+        st.subheader("🪝 フック管理")
+        try:
+            from .csv_analyzer import get_active_hooks
+            hooks = get_active_hooks()
+            if hooks:
+                st.write(f"**{len(hooks)}個** のアクティブフック")
+                for name, pattern in hooks:
+                    st.write(f"• **{name}** — `{pattern}`")
+            else:
+                st.info("カスタムフックなし（デフォルトを使用中）")
+
+            # Industry presets
+            st.markdown("---")
+            st.subheader("業界プリセット")
+            try:
+                from .csv_analyzer import INDUSTRY_HOOKS
+                industries = list(INDUSTRY_HOOKS.keys()) if hasattr(INDUSTRY_HOOKS, 'keys') else []
+                if industries:
+                    selected = st.selectbox("業界を選択", industries, key="hook_industry")
+                    if st.button("このプリセットを適用", key="apply_hooks"):
+                        import json
+                        hooks_path = settings.profile_dir / "hooks.json"
+                        hooks_data = {"hooks": INDUSTRY_HOOKS[selected], "genre": selected}
+                        hooks_path.write_text(json.dumps(hooks_data, ensure_ascii=False, indent=2), encoding="utf-8")
+                        st.success(f"✅ {selected} のフックプリセットを適用しました")
+            except Exception:
+                pass
+        except Exception as e:
+            st.warning(f"フック情報取得失敗: {e}")
+
+    # -- AI Generation --
+    with tool_tab5:
+        st.subheader("🤖 AI投稿生成")
+        if not settings.anthropic_api_key:
+            st.warning("Anthropic API Keyを設定してください")
+        else:
+            with st.form("ai_generate"):
+                topic = st.text_input("トピック", placeholder="例: 補助金の申請方法")
+                col1, col2 = st.columns(2)
+                try:
+                    from .csv_analyzer import get_active_hooks
+                    hook_names = [name for name, _ in get_active_hooks()]
+                except Exception:
+                    hook_names = ["問いかけ型", "数字訴求", "危機感", "共感型", "意外性"]
+                hook_type = col1.selectbox("フックタイプ", hook_names, key="gen_hook")
+                length = col2.selectbox("長さ", ["short", "medium"], key="gen_length")
+                generate_btn = st.form_submit_button("生成", type="primary")
+
+            if generate_btn and topic:
+                try:
+                    from .content_generator import generate_post
+                    with st.spinner("生成中..."):
+                        post = generate_post(topic=topic, hook_type=hook_type, length=length)
+                        st.markdown("**生成結果:**")
+                        st.text_area("生成テキスト", value=post.text, height=200, key="gen_result")
+                        st.caption(f"文字数: {len(post.text)}")
+                except Exception as e:
+                    st.error(f"生成失敗: {e}")
+
+
+def _render_research(st, settings, profile: str):
+    """Render research tab."""
+    st.header("🔍 リサーチ")
+
+    research_tab1, research_tab2 = st.tabs(["🔎 キーワード検索", "📊 トレンド"])
+
+    with research_tab1:
+        st.subheader("キーワード検索")
+        if not settings.threads_access_token:
+            st.warning("Threads Access Tokenを設定してください")
+        else:
+            keyword = st.text_input("検索キーワード", placeholder="例: 補助金", key="research_kw")
+            if st.button("検索", key="research_search") and keyword:
+                try:
+                    from .threads_api import ThreadsGraphClient
+                    with st.spinner("検索中..."):
+                        with ThreadsGraphClient(access_token=settings.threads_access_token) as client:
+                            results = client.search_posts(keyword, limit=20)
+                            if results:
+                                st.success(f"**{len(results)}件** の投稿が見つかりました")
+                                from .csv_analyzer import _detect_hooks
+                                for r in results:
+                                    text = r.get("text", "")
+                                    hooks = _detect_hooks(text)
+                                    hook_str = ", ".join(hooks) if hooks else "—"
+                                    likes = r.get("like_count", 0)
+                                    with st.expander(f"❤️ {likes} | 🎣 {hook_str} | {text[:60]}..."):
+                                        st.text(text)
+                                        st.caption(f"ユーザー: @{r.get('username', '?')} | いいね: {likes}")
+                            else:
+                                st.info("結果なし")
+                except Exception as e:
+                    st.error(f"検索失敗: {e}")
+
+    with research_tab2:
+        st.subheader("リサーチ履歴・トレンド")
+        try:
+            from .research_store import ResearchStore
+            store = ResearchStore(store_path=settings.profile_dir / "keyword_snapshots.json")
+            snapshots = store.get_all() if hasattr(store, 'get_all') else []
+            if snapshots:
+                rows = []
+                for s in snapshots:
+                    rows.append({
+                        "日付": s.get("date", ""),
+                        "キーワード": s.get("keyword", ""),
+                        "投稿数": s.get("count", 0),
+                        "平均いいね": s.get("avg_likes", 0),
+                    })
+                if rows:
+                    rdf = pd.DataFrame(rows)
+                    st.dataframe(rdf, use_container_width=True, hide_index=True)
+            else:
+                st.info("リサーチ履歴なし")
+        except Exception as e:
+            st.info("リサーチ履歴なし")
+
+
+def _render_token_management(st, settings, profile: str):
+    """Render token and rate limit management tab."""
+    st.header("🔑 トークン・API管理")
+
+    # Token status
+    st.subheader("Threads APIトークン")
+    if settings.threads_access_token:
+        if st.button("トークン情報を確認", key="check_token"):
+            try:
+                from .threads_api import ThreadsGraphClient
+                with ThreadsGraphClient(access_token=settings.threads_access_token) as client:
+                    info = client.get_token_info()
+                    expires_at = info.get("expires_at", 0)
+                    if expires_at:
+                        import time as _time
+                        remaining = expires_at - int(_time.time())
+                        days_left = remaining // 86400
+                        if days_left > 7:
+                            st.success(f"✅ トークン有効期限: あと **{days_left}日**")
+                        elif days_left > 0:
+                            st.warning(f"⚠️ トークン有効期限: あと **{days_left}日** — 更新をお勧めします")
+                        else:
+                            st.error("❌ トークンは期限切れです")
+                    else:
+                        st.info("有効期限情報を取得できませんでした")
+
+                    me = client.get_me()
+                    st.write(f"アカウント: **@{me.get('username', '?')}**")
+                    st.write(f"名前: {me.get('name', '—')}")
+            except Exception as e:
+                st.error(f"トークン確認失敗: {e}")
+
+        if st.button("トークンを更新", key="refresh_token"):
+            try:
+                from .threads_api import ThreadsGraphClient
+                with ThreadsGraphClient(access_token=settings.threads_access_token) as client:
+                    new_token = client.refresh_long_lived_token()
+                    if new_token:
+                        # Update config
+                        import json
+                        config_path = settings.profile_dir / "config.json"
+                        if config_path.exists():
+                            config = json.loads(config_path.read_text(encoding="utf-8"))
+                            config["threads_access_token"] = new_token
+                            config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+                        st.success("✅ トークンを更新しました（約60日間有効）")
+                    else:
+                        st.warning("トークン更新に失敗しました")
+            except Exception as e:
+                st.error(f"トークン更新失敗: {e}")
+    else:
+        st.warning("Threads Access Tokenが設定されていません")
+
+    # Rate limits
+    st.markdown("---")
+    st.subheader("レート制限")
+    try:
+        rate_path = settings.profile_dir / "rate_limits.json"
+        if rate_path.exists():
+            import json
+            data = json.loads(rate_path.read_text(encoding="utf-8"))
+            entries = data if isinstance(data, list) else []
+
+            from datetime import datetime as dt, timedelta
+            now = dt.now()
+
+            # Count recent API calls
+            search_count = sum(1 for e in entries if e.get("endpoint") == "search" and
+                             (now - dt.strptime(e.get("timestamp", "2000-01-01"), "%Y-%m-%d %H:%M:%S")).days < 7)
+            publish_count = sum(1 for e in entries if e.get("endpoint") == "publish" and
+                              (now - dt.strptime(e.get("timestamp", "2000-01-01"), "%Y-%m-%d %H:%M:%S")).days < 1)
+
+            col1, col2 = st.columns(2)
+            col1.metric("検索API（7日間）", f"{search_count}/500")
+            col2.metric("投稿API（24時間）", f"{publish_count}/250")
+
+            search_pct = min(search_count / 500, 1.0)
+            publish_pct = min(publish_count / 250, 1.0)
+            col1.progress(search_pct)
+            col2.progress(publish_pct)
+        else:
+            st.info("レート制限データなし")
+    except Exception as e:
+        st.info(f"レート制限情報取得失敗: {e}")
+
+    # Metricool status
+    st.markdown("---")
+    st.subheader("Metricool接続状態")
+    if settings.validate_credentials():
+        st.write(f"User ID: `{settings.user_id}`")
+        st.write(f"Blog ID: `{settings.blog_id}`")
+        st.write("トークン: ✅ 設定済み")
+    else:
+        st.warning("Metricool認証情報が未設定です")
 
 
 # ── Client Management ────────────────────────────────────
