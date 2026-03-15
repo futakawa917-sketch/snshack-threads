@@ -16,7 +16,7 @@
     "date": "2026-03-15",
     "scheduled_hour": 10,
     "scheduled_minute": 0,
-    "status": "pending"
+    "status": "scheduled_metricool"
   },
   {
     "text": "資金繰りに困ってからでは遅い\n\nあなたの会社の運転資金、何ヶ月もちますか？",
@@ -25,7 +25,7 @@
     "date": "2026-03-15",
     "scheduled_hour": 12,
     "scheduled_minute": 0,
-    "status": "pending"
+    "status": "scheduled_metricool"
   },
   {
     "text": "8000万円の補助金打ち切りで、神戸市室内管弦楽団が存続危機\n\nこれ、文化芸術予算の現実を象徴してる。\n私が見てきた自治体補助金の中でも、文化系は真っ先に削減対象になる。\n\nでも実はこういう時こそ、民間の文化芸術補助金が狙い目。\n文化庁の補助金や企業メセナ、クラウドファンディング支援制度など、自治体に頼らない資金調達の選択肢は意外と多い。\n\n神戸の楽団も、きっと別の資金源を見つけるはず。\n\nあなたの地域で補助金打ち切りになった文化施設、知ってる？",
@@ -34,7 +34,7 @@
     "date": "2026-03-15",
     "scheduled_hour": 18,
     "scheduled_minute": 0,
-    "status": "pending"
+    "status": "scheduled_metricool"
   },
   {
     "text": "文化への補助金って本当に無駄遣い？\n\n神戸市が室内オケの補助金廃止を検討。\n理由は「公的支出として適切でない」\n\nあなたの住む自治体は何にお金を使うべき？",
@@ -43,6 +43,6 @@
     "date": "2026-03-15",
     "scheduled_hour": 22,
     "scheduled_minute": 0,
-    "status": "pending"
+    "status": "scheduled_metricool"
   }
 ]
