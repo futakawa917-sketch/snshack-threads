@@ -2,13 +2,14 @@ name: Daily Autopilot
 
 on:
   schedule:
-    # JST 7:00 — コンテンツ生成 + 7時台の投稿を公開
+    # JST 7:00 — コンテンツ生成 + 7:30投稿を公開
     - cron: '0 22 * * *'
-    # 以降は生成済みpending投稿を時間帯ごとに公開
-    - cron: '0 1 * * *'    # JST 10:00
-    - cron: '0 3 * * *'    # JST 12:00
-    - cron: '0 9 * * *'    # JST 18:00
-    - cron: '0 13 * * *'   # JST 22:00
+    # 以降は最適スロット(7:30,12:00,18:00,19:30,21:00)に合わせて公開
+    # 各スロットの少し後に実行し、dueな投稿を公開する
+    - cron: '35 3 * * *'   # JST 12:35 → 12:00スロット公開
+    - cron: '10 9 * * *'   # JST 18:10 → 18:00スロット公開
+    - cron: '40 10 * * *'  # JST 19:40 → 19:30スロット公開
+    - cron: '10 12 * * *'  # JST 21:10 → 21:00スロット公開
   workflow_dispatch: # 手動実行も可能
 
 permissions:
@@ -189,7 +190,7 @@ jobs:
 
           print(f'Current time: {now.strftime(\"%Y-%m-%d %H:%M:%S %Z\")}')
 
-          # ── Step 1: データ収集 & 投稿生成 ──
+          # ── Step 1: データ収集 & 投稿生成（今日分がなければ実行） ──
           need_generate = False
           if pending_path.exists():
               entries = json.loads(pending_path.read_text(encoding='utf-8'))
@@ -200,13 +201,14 @@ jobs:
                   need_generate = True
                   print('Pending file is empty')
               else:
-                  already_published = any(e.get('status') == 'published' for e in entries)
-                  if already_published:
-                      print('Today posts already published. Nothing to do.')
+                  # 今日分が存在: pending が残っていれば投稿、全完了なら終了
+                  has_pending = any(e['status'] == 'pending' for e in entries)
+                  if not has_pending:
+                      print(f'All posts already processed. Nothing to do.')
                       with open(os.environ.get('GITHUB_OUTPUT', '/dev/null'), 'a') as f:
                           f.write('publish_status=already_scheduled\n')
                       exit(0)
-                  need_generate = not any(e['status'] == 'pending' for e in entries)
+                  print(f'Today plan exists with {sum(1 for e in entries if e[\"status\"] == \"pending\")} pending posts')
           else:
               need_generate = True
               print('No pending file found')
@@ -237,14 +239,22 @@ jobs:
           pending = [e for e in entries if e['status'] == 'pending']
 
           if not pending:
-              print('No pending posts to schedule')
+              print('No pending posts to publish')
               exit(0)
 
-          print(f'Found {len(pending)} pending posts to publish via Threads API')
+          # ── Step 3: 時間が来た投稿をThreads APIで公開 ──
+          due = [e for e in pending if e['scheduled_hour'] < now.hour or (e['scheduled_hour'] == now.hour and e.get('scheduled_minute', 0) <= now.minute)]
+          not_due = len(pending) - len(due)
 
-          # ── Step 3: Threads APIで直接投稿 ──
+          if not due:
+              print(f'No posts due yet ({not_due} posts waiting for later)')
+              exit(0)
+
+          print(f'Found {len(due)} due posts to publish ({not_due} waiting for later)')
+
           from snshack_threads.threads_api import ThreadsGraphClient
           from snshack_threads.post_history import PostHistory
+          import time as _time
 
           history = PostHistory(history_path=settings.profile_dir / 'post_history.json')
 
@@ -259,9 +269,7 @@ jobs:
                       m = entry.get('scheduled_minute', 0)
                       publish_at = now.replace(hour=h, minute=m, second=0, microsecond=0)
 
-                      # まだ時間が来ていない投稿はスキップ
                       if publish_at > now:
-                          print(f'  Skipping {entry[\"hook\"]} (scheduled at {h:02d}:{m:02d}, not yet due)')
                           continue
 
                       print(f'Publishing: {entry[\"hook\"]} (scheduled {h:02d}:{m:02d})')
@@ -280,11 +288,11 @@ jobs:
                           )
 
                           print(f'  Published OK: {entry[\"hook\"]} (post_id={post_id})')
+                          _time.sleep(2)
                       except Exception as pe:
                           entries[idx]['status'] = f'failed: {pe}'
                           print(f'  Failed: {entry[\"hook\"]} — {pe}')
 
-                  # 保存
                   pending_path.write_text(
                       json.dumps(entries, ensure_ascii=False, indent=2), encoding='utf-8'
                   )
