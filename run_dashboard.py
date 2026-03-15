@@ -26,6 +26,9 @@ def _ensure_profile():
     api_key = secrets.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY", ""))
     genre = secrets.get("PROFILE_GENRE", os.environ.get("PROFILE_GENRE", ""))
     keywords = secrets.get("RESEARCH_KEYWORDS", os.environ.get("RESEARCH_KEYWORDS", ""))
+    metricool_token = secrets.get("METRICOOL_USER_TOKEN", os.environ.get("METRICOOL_USER_TOKEN", ""))
+    metricool_user_id = secrets.get("METRICOOL_USER_ID", os.environ.get("METRICOOL_USER_ID", ""))
+    metricool_blog_id = secrets.get("METRICOOL_BLOG_ID", os.environ.get("METRICOOL_BLOG_ID", ""))
 
     if not token:
         return
@@ -40,6 +43,12 @@ def _ensure_profile():
         existing["threads_access_token"] = token
         if api_key:
             existing["anthropic_api_key"] = api_key
+        if metricool_token:
+            existing["user_token"] = metricool_token
+        if metricool_user_id:
+            existing["user_id"] = metricool_user_id
+        if metricool_blog_id:
+            existing["blog_id"] = metricool_blog_id
         config_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
         return
 
@@ -53,6 +62,9 @@ def _ensure_profile():
         "timezone": "Asia/Tokyo",
         "posts_per_day": 5,
         "short_post_ratio": 0.5,
+        "user_token": metricool_token,
+        "user_id": metricool_user_id,
+        "blog_id": metricool_blog_id,
     }
     config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
 
