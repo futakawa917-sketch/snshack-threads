@@ -160,6 +160,22 @@ def _render_client_management(st):
             )
 
             st.markdown("---")
+            st.markdown("**Metricool設定（予約投稿用）**")
+            metricool_token = st.text_input(
+                "Metricool User Token",
+                type="password",
+                help="Metricoolの設定から取得",
+            )
+            metricool_user_id = st.text_input(
+                "Metricool User ID",
+                help="MetricoolのユーザーID",
+            )
+            metricool_blog_id = st.text_input(
+                "Metricool Blog ID",
+                help="MetricoolのブログID",
+            )
+
+            st.markdown("---")
             st.markdown("**投稿設定**")
             col1, col2 = st.columns(2)
             posts_per_day = col1.number_input("1日の投稿数", min_value=1, max_value=10, value=5)
@@ -194,6 +210,9 @@ def _render_client_management(st):
                         "timezone": "Asia/Tokyo",
                         "posts_per_day": posts_per_day,
                         "short_post_ratio": short_ratio,
+                        "user_token": metricool_token,
+                        "user_id": metricool_user_id,
+                        "blog_id": metricool_blog_id,
                     }
                     config_path = profile_dir / "config.json"
                     config_path.write_text(
@@ -252,6 +271,24 @@ def _render_client_management(st):
                     "リサーチキーワード",
                     value=current_config.get("research_keywords", ""),
                 )
+
+                st.markdown("---")
+                st.markdown("**Metricool設定（予約投稿用）**")
+                new_metricool_token = st.text_input(
+                    "Metricool User Token",
+                    value=current_config.get("user_token", ""),
+                    type="password",
+                )
+                new_metricool_user_id = st.text_input(
+                    "Metricool User ID",
+                    value=current_config.get("user_id", ""),
+                )
+                new_metricool_blog_id = st.text_input(
+                    "Metricool Blog ID",
+                    value=current_config.get("blog_id", ""),
+                )
+
+                st.markdown("---")
                 col1, col2 = st.columns(2)
                 new_posts = col1.number_input(
                     "1日の投稿数",
@@ -283,6 +320,9 @@ def _render_client_management(st):
                     "research_keywords": new_keywords,
                     "posts_per_day": new_posts,
                     "short_post_ratio": new_short,
+                    "user_token": new_metricool_token,
+                    "user_id": new_metricool_user_id,
+                    "blog_id": new_metricool_blog_id,
                 })
                 config_path.write_text(
                     json.dumps(current_config, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -315,25 +355,44 @@ def _render_client_management(st):
                     has_token = "✅" if s.threads_access_token else "❌"
                     has_api = "✅" if s.anthropic_api_key else "❌"
 
+                    has_metricool = "✅" if s.validate_credentials() else "❌"
+
                     with st.expander(f"**{label}** ({p})"):
                         col1, col2, col3 = st.columns(3)
                         col1.write(f"Threads Token: {has_token}")
                         col2.write(f"Anthropic Key: {has_api}")
                         col3.write(f"ジャンル: {s.genre or '未設定'}")
 
-                        col4, col5 = st.columns(2)
-                        col4.write(f"投稿数/日: {s.posts_per_day}")
-                        col5.write(f"ショート割合: {s.short_post_ratio:.0%}")
+                        col4, col5, col6 = st.columns(3)
+                        col4.write(f"Metricool: {has_metricool}")
+                        col5.write(f"投稿数/日: {s.posts_per_day}")
+                        col6.write(f"ショート割合: {s.short_post_ratio:.0%}")
 
-                        if s.threads_access_token:
-                            if st.button(f"接続テスト", key=f"test_{p}"):
-                                try:
-                                    from .threads_api import ThreadsGraphClient
-                                    with ThreadsGraphClient(access_token=s.threads_access_token) as client:
-                                        me = client.get_me()
-                                        st.success(f"📡 @{me.get('username', '?')} — 接続OK")
-                                except Exception as e:
-                                    st.error(f"接続失敗: {e}")
+                        bcol1, bcol2 = st.columns(2)
+                        with bcol1:
+                            if s.threads_access_token:
+                                if st.button("Threads接続テスト", key=f"test_threads_{p}"):
+                                    try:
+                                        from .threads_api import ThreadsGraphClient
+                                        with ThreadsGraphClient(access_token=s.threads_access_token) as client:
+                                            me = client.get_me()
+                                            st.success(f"📡 @{me.get('username', '?')} — 接続OK")
+                                    except Exception as e:
+                                        st.error(f"接続失敗: {e}")
+                        with bcol2:
+                            if s.validate_credentials():
+                                if st.button("Metricool接続テスト", key=f"test_metricool_{p}"):
+                                    try:
+                                        from .api import MetricoolClient
+                                        with MetricoolClient(settings=s) as client:
+                                            # 接続テスト: 予約投稿の取得を試行
+                                            posts = client.get_scheduled_posts(
+                                                datetime.now().strftime("%Y-%m-%d"),
+                                                datetime.now().strftime("%Y-%m-%d"),
+                                            )
+                                            st.success(f"📡 Metricool接続OK（本日の予約: {len(posts)}件）")
+                                    except Exception as e:
+                                        st.error(f"Metricool接続失敗: {e}")
                 except Exception as e:
                     st.error(f"{p}: {e}")
 
