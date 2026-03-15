@@ -2,9 +2,13 @@ name: Daily Autopilot
 
 on:
   schedule:
-    # 毎日 JST 7:00 に1回だけ実行 (UTC 22:00)
-    # AIで投稿生成 → Threads APIで直接投稿
+    # JST 7:00 — コンテンツ生成 + 7時台の投稿を公開
     - cron: '0 22 * * *'
+    # 以降は生成済みpending投稿を時間帯ごとに公開
+    - cron: '0 1 * * *'    # JST 10:00
+    - cron: '0 3 * * *'    # JST 12:00
+    - cron: '0 9 * * *'    # JST 18:00
+    - cron: '0 13 * * *'   # JST 22:00
   workflow_dispatch: # 手動実行も可能
 
 permissions:
